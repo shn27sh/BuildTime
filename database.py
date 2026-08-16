@@ -414,6 +414,14 @@ class Database:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def has_running_session(self):
+        """True if at least one table's stopwatch is actively ticking right
+        now (status='running') — as opposed to idle or awaiting_checkout
+        (stopped, but not yet finished). Used to lock the Settings window."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT 1 FROM sessions WHERE status='running' LIMIT 1").fetchone()
+            return row is not None
+
     # ------------------------------------------------------------------
     # History / reporting
     # ------------------------------------------------------------------

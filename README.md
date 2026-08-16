@@ -64,6 +64,16 @@ pip install -r requirements.txt
 That's the only third-party dependency (`requests`) — everything else
 (Tkinter, sqlite3, uuid, csv…) is part of the Python standard library.
 
+### Windows: build a standalone .exe instead
+
+For distributing the app without requiring a Python installation, run
+**`build_windows.bat`** (in this same folder) on a Windows PC. It creates
+a throwaway virtual environment, installs `requirements.txt` plus
+PyInstaller, and produces `dist\BuildTime.exe` — a single executable,
+with no unzipping, installation, or console window. Re-run it on that PC
+whenever a new version is released. For all other purposes, run
+`python3 main.py` as described below.
+
 ## 2. Run
 
 ```bash
@@ -156,6 +166,7 @@ buildtime/
 │   └── history_window.py     # records browser, CSV export, edit Received
 ├── test_database.py          # automated checks for the data layer (37 checks)
 ├── test_sync_manager.py      # automated checks for the sync layer (16 checks)
+├── build_windows.bat         # Windows-only: builds a standalone dist\BuildTime.exe
 ├── requirements.txt
 ├── supabase_schema.sql
 └── README.md
