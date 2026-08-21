@@ -25,6 +25,7 @@ Design notes
 import sqlite3
 import uuid
 import math
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from datetime import datetime, date
 from contextlib import contextmanager
@@ -33,6 +34,14 @@ APP_DIR = Path.home() / "BuildTime"
 DB_PATH = APP_DIR / "buildtime.db"
 
 DEFAULT_TABLES = ["Table 1", "Table 2", "Table 3", "Table 4", "Table 5", "Table 6"]
+
+# Reserved pseudo-table for walk-in snack/drink sales that aren't tied to a
+# table. 0 can never collide with a real tables_config id (AUTOINCREMENT
+# starts at 1), so this needs no schema change and no FK constraint exists
+# on sessions.table_id to violate. It's also never sent to Supabase --
+# sync_manager's row shape has no table_id column, only table_name.
+WALKIN_TABLE_ID = 0
+WALKIN_TABLE_NAME = "Walk-in Sale"
 
 # Just starter examples — meant to be edited via Settings > Snacks & Drinks.
 DEFAULT_ITEMS = [
@@ -46,7 +55,6 @@ DEFAULT_ITEMS = [
 DEFAULT_SETTINGS = {
     "hourly_rate": "5.00",
     "currency_symbol": "$",
-    "round_billed_minutes": "0",       # 0 = bill exact duration, no rounding
     "supabase_url": "",
     "supabase_key": "",
     "auto_sync_enabled": "0",          # off by default — sync is opt-in
@@ -60,6 +68,61 @@ def _now_iso():
 
 def _today_str():
     return date.today().isoformat()
+
+
+# ------------------------------------------------------------------
+# Duration-based billing
+# ------------------------------------------------------------------
+# Tiered stopwatch billing rule:
+#   - Any elapsed duration from 0 seconds up to and including 1 hour
+#     bills as a flat 1-hour minimum.
+#   - Once elapsed time exceeds 1 hour, every *started* 10-minute
+#     increment past that first hour adds another 1/6 of the hourly
+#     rate — i.e. metering switches from "1 flat hour" to 10-minute
+#     blocks the moment you're past the first hour.
+# This is a fixed formula, not a user-configurable "round up to the
+# nearest X minutes" setting — that older knob (round_billed_minutes)
+# has been removed, since it can't compose sensibly with a rule that
+# treats the first hour and every subsequent block differently.
+BILLING_HOUR_SECONDS = 3600
+BILLING_BLOCK_SECONDS = 600           # 10 minutes
+BILLING_BLOCKS_PER_HOUR = 6           # 60 / 10, i.e. each block = 1/6 hour
+
+
+def compute_billable_hours(duration_seconds):
+    """Elapsed seconds -> billable hours, as a Decimal (e.g. Decimal('1'),
+    Decimal('1.5'), Decimal('2')) rather than a float, so multiplying by
+    the hourly rate later never picks up binary floating-point error from
+    a repeating fraction like 1/6 (0.1666... has no exact representation
+    in either binary or decimal floating point).
+
+    duration_seconds can be an int or a float (a live-ticking stopwatch
+    reports fractional seconds). Any elapsed time still in progress past
+    a boundary -- even by a fraction of a second -- counts as having
+    *started* the next 10-minute block, matching an ordinary metered/taxi
+    style "started increment" billing rule.
+    """
+    if duration_seconds <= BILLING_HOUR_SECONDS:
+        return Decimal(1)
+    extra_seconds = duration_seconds - BILLING_HOUR_SECONDS
+    extra_blocks = math.ceil(extra_seconds / BILLING_BLOCK_SECONDS)
+    return Decimal(1) + Decimal(extra_blocks) / Decimal(BILLING_BLOCKS_PER_HOUR)
+
+
+def compute_duration_cost(duration_seconds, hourly_rate):
+    """Elapsed seconds + hourly rate -> billed amount, rounded to the
+    nearest cent (standard half-up rounding). Runs through Decimal
+    end-to-end: the rate is parsed via str(hourly_rate) rather than used
+    as a float directly, so its exact decimal text (e.g. "5.00") is
+    preserved instead of whatever binary floating-point value happens to
+    be closest to it. Used for both the live "est. $X.XX" readout while
+    a table is running and the final charge once it's stopped, so the
+    two can never disagree.
+    """
+    billable_hours = compute_billable_hours(duration_seconds)
+    rate = Decimal(str(hourly_rate))
+    cost = (billable_hours * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return float(cost)
 
 
 class Database:
@@ -364,7 +427,7 @@ class Database:
             ).fetchall()
             return [dict(r) for r in rows]
 
-    def stop_session(self, session_id, round_minutes=0):
+    def stop_session(self, session_id):
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
             if not row:
@@ -372,11 +435,7 @@ class Database:
             start = datetime.fromisoformat(row["start_time"])
             end = datetime.now()
             duration = (end - start).total_seconds()
-            billed_seconds = duration
-            if round_minutes and round_minutes > 0:
-                step = round_minutes * 60
-                billed_seconds = math.ceil(duration / step) * step
-            duration_cost = (billed_seconds / 3600.0) * row["hourly_rate_snapshot"]
+            duration_cost = compute_duration_cost(duration, row["hourly_rate_snapshot"])
             total = row["items_cost"] + duration_cost
             conn.execute(
                 """UPDATE sessions SET end_time=?, duration_seconds=?, duration_cost=?,
@@ -394,6 +453,65 @@ class Database:
                 (_now_iso(), session_id),
             )
 
+    # ------------------------------------------------------------------
+    # Walk-in sales -- snack/drink sales not tied to any table, so there's
+    # no timer and no duration_cost. These reuse the same sessions /
+    # session_items tables and the same completed/history/sync machinery
+    # as a table session (finish_session works unchanged), just under
+    # their own pair of status values ('walkin_open' / 'walkin_checkout')
+    # so has_running_session() -- which is specifically about a *stopwatch*
+    # ticking -- never counts one, and it never appears as a configurable
+    # row in Settings \u25b8 Manage Tables.
+    # ------------------------------------------------------------------
+    def start_walkin_sale(self):
+        sid = str(uuid.uuid4())
+        now = _now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO sessions
+                   (id, table_id, table_name_snapshot, date, start_time, end_time,
+                    duration_seconds, hourly_rate_snapshot, items_cost, duration_cost,
+                    total_cost, received_amount, status, synced, created_at, updated_at)
+                   VALUES (?,?,?,?,?,NULL,NULL,0,0,NULL,NULL,NULL,'walkin_open',0,?,?)""",
+                (sid, WALKIN_TABLE_ID, WALKIN_TABLE_NAME, _today_str(), now, now, now),
+            )
+        return sid
+
+    def stop_walkin_sale(self, session_id):
+        """'Complete Sale' -- moves a walk-in cart to checkout. There's no
+        timer involved, so the total is simply the items cost."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
+            if not row:
+                return None
+            conn.execute(
+                """UPDATE sessions SET duration_cost=0, total_cost=?,
+                   status='walkin_checkout', updated_at=? WHERE id=?""",
+                (row["items_cost"], _now_iso(), session_id),
+            )
+        return self.get_session(session_id)
+
+    def resume_walkin_sale(self, session_id):
+        """'Back to Cart' from the checkout screen -- undoes Complete Sale
+        so more items can be added before finishing."""
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE sessions SET duration_cost=NULL, total_cost=NULL,
+                   status='walkin_open', updated_at=? WHERE id=?""",
+                (_now_iso(), session_id),
+            )
+
+    def delete_session_if_empty(self, session_id):
+        """Drop a session row if it has no line items -- used when a
+        walk-in cart is emptied back to zero via the '-' buttons, so an
+        abandoned empty cart doesn't linger as a phantom active session."""
+        with self._connect() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) c FROM session_items WHERE session_id=?", (session_id,)
+            ).fetchone()["c"]
+            if count == 0:
+                conn.execute("DELETE FROM sessions WHERE id=?", (session_id,))
+
     def finish_session(self, session_id, received_amount, comment=None):
         with self._connect() as conn:
             conn.execute(
@@ -407,10 +525,13 @@ class Database:
             return dict(row) if row else None
 
     def get_active_sessions(self):
-        """Sessions still running or awaiting checkout — used for crash/restart recovery."""
+        """Sessions still running/awaiting checkout, or a walk-in sale still
+        open/at checkout — used for crash/restart recovery and the
+        close-warning dialog."""
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM sessions WHERE status IN ('running','awaiting_checkout')"
+                "SELECT * FROM sessions WHERE status IN "
+                "('running','awaiting_checkout','walkin_open','walkin_checkout')"
             ).fetchall()
             return [dict(r) for r in rows]
 

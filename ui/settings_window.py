@@ -250,6 +250,7 @@ class SettingsWindow(tk.Toplevel):
         if result:
             self.db.add_item(result["name"], result["category"], result["price"])
             self._refresh_items_tree()
+            self.app.notify_items_catalog_changed()
 
     def _edit_item(self):
         if self._guard_locked():
@@ -262,6 +263,7 @@ class SettingsWindow(tk.Toplevel):
         if result:
             self.db.update_item(iid, result["name"], result["category"], result["price"])
             self._refresh_items_tree()
+            self.app.notify_items_catalog_changed()
 
     def _toggle_item(self):
         if self._guard_locked():
@@ -272,6 +274,7 @@ class SettingsWindow(tk.Toplevel):
         item = next(i for i in self.db.list_items(active_only=False) if i["id"] == iid)
         self.db.set_item_active(iid, not item["active"])
         self._refresh_items_tree()
+        self.app.notify_items_catalog_changed()
 
     # ------------------------------------------------------------------
     # Pricing
@@ -294,17 +297,16 @@ class SettingsWindow(tk.Toplevel):
         currency_entry.pack(side="left")
         self._lockable_widgets.append(currency_entry)
 
-        row3 = ttk.Frame(f); row3.pack(fill="x", **pad)
-        ttk.Label(row3, text="Round billed time up to (min):", width=26).pack(side="left")
-        self.round_var = tk.StringVar(value=self.db.get_setting("round_billed_minutes", "0"))
-        round_entry = ttk.Entry(row3, textvariable=self.round_var, width=6)
-        round_entry.pack(side="left")
-        self._lockable_widgets.append(round_entry)
-
         ttk.Label(
-            f, text="0 = bill the exact duration. E.g. 15 rounds each session up to the next 15 minutes.",
-            foreground="gray", wraplength=500,
-        ).pack(anchor="w", padx=8)
+            f,
+            text=(
+                "Billing: the first hour is always billed as a full hour, "
+                "even if the stopwatch only ran a few seconds. Past the "
+                "first hour, every started 10-minute block adds another "
+                "1/6 of the hourly rate."
+            ),
+            foreground="gray", wraplength=500, justify="left",
+        ).pack(anchor="w", padx=8, pady=(4, 0))
 
         save_pricing_btn = ttk.Button(f, text="Save Pricing", command=self._save_pricing)
         save_pricing_btn.pack(anchor="w", padx=8, pady=12)
@@ -315,13 +317,11 @@ class SettingsWindow(tk.Toplevel):
             return
         try:
             rate = float(self.rate_var.get())
-            round_min = int(self.round_var.get() or 0)
         except ValueError:
-            messagebox.showerror("Invalid input", "Hourly rate and rounding must be numbers.", parent=self)
+            messagebox.showerror("Invalid input", "Hourly rate must be a number.", parent=self)
             return
         self.db.set_setting("hourly_rate", rate)
         self.db.set_setting("currency_symbol", self.currency_var.get() or "$")
-        self.db.set_setting("round_billed_minutes", round_min)
         self.app.refresh_status_bar()
         messagebox.showinfo("Saved", "Pricing settings saved.", parent=self)
 

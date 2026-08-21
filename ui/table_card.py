@@ -20,6 +20,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime
 
+from database import compute_duration_cost
+
 
 class TableCard(ttk.LabelFrame):
     def __init__(self, parent, app, table):
@@ -201,6 +203,16 @@ class TableCard(ttk.LabelFrame):
         self._cached_items_cost = session["items_cost"]
         self._refresh_items_section()
 
+    def refresh_items_catalog(self):
+        """Rebuild the item-catalog buttons in place if they're currently
+        visible (this table is running) -- called by MainWindow whenever
+        Settings adds, edits, hides, or shows an item. In practice this
+        table can't actually BE running while Settings is open (a running
+        stopwatch locks Settings), but it costs nothing to handle it
+        properly rather than lean on that as a guarantee."""
+        if self.status == "running":
+            self._build_items_section()
+
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
@@ -216,8 +228,7 @@ class TableCard(ttk.LabelFrame):
     def on_stop(self):
         if not messagebox.askyesno("Stop table", f"Stop the timer for {self.table['name']}?"):
             return
-        round_minutes = int(self.db.get_setting("round_billed_minutes", "0") or 0)
-        session = self.db.stop_session(self.session_id, round_minutes=round_minutes)
+        session = self.db.stop_session(self.session_id)
         self._render_awaiting_checkout(session)
         self.app.notify_stopwatch_state_changed()
 
@@ -271,7 +282,7 @@ class TableCard(ttk.LabelFrame):
             return
         elapsed = (datetime.now() - self._cached_start).total_seconds()
         self.timer_label.config(text=self._fmt(elapsed))
-        live_cost = self._cached_items_cost + (elapsed / 3600.0) * self._cached_rate
+        live_cost = self._cached_items_cost + compute_duration_cost(elapsed, self._cached_rate)
         cur = self.db.get_currency_symbol()
         self.status_label.config(text=f"Running \u00b7 est. {cur}{live_cost:.2f}", foreground="#1a7f37")
         self._tick_job = self.after(500, self._tick)

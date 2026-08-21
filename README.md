@@ -18,10 +18,26 @@ cloud sync that never blocks the app and never uploads a duplicate.
   up as its own row right at the bottom of that table's card (e.g.
   "+ Water (2.00)"  "x0"  "-") that counts quantity and cost live — no
   extra popup window, just tap directly on the card.
-- **Automatic billing** — set an hourly rate once in **Settings ▸ Pricing**.
-  Total cost = (sum of items) + (duration × hourly rate). An optional
-  "round up to nearest N minutes" setting is available if you bill in
-  fixed increments instead of exact time.
+- **Walk-in sales, no table needed** — a **Walk-in Sale** card is pinned
+  in its own column to the right of the table grid, always visible: no
+  name to configure and no stopwatch, just the same tap-to-add item
+  catalog and a **Complete Sale** button for a customer who's only buying
+  a snack or drink rather than sitting at a table. It goes through the
+  same checkout (Received amount, optional Comment), the same crash-safe
+  local database, and the same History/sync as every table session — just
+  without a duration or an hourly charge.
+- **Tiered hourly billing** — set an hourly rate once in
+  **Settings ▸ Pricing**. The first hour is always billed as a flat
+  1-hour minimum, even if a table only ran for a few seconds. Past that
+  first hour, billing switches to 10-minute blocks: every *started*
+  10-minute increment adds another 1/6 of the hourly rate (so 1h11m
+  bills as 1 hour + 2/6, 1h21m as 1 hour + 3/6, and so on). The live
+  "Running · est. $X.XX" estimate and the final charge after Stop always
+  agree, since both go through the same calculation
+  (`compute_duration_cost` in `database.py`). The money math runs through
+  Python's `Decimal` rather than plain floats specifically so a
+  repeating fraction like 1/6 can't introduce rounding error into the
+  charged amount.
 - **Optional comment at checkout** — after you press Stop, an optional
   "Comment" box sits between the Received amount and the Finish/Resume
   buttons for a quick note (e.g. "paid cash", "asked for a receipt").
@@ -39,9 +55,10 @@ cloud sync that never blocks the app and never uploads a duplicate.
   a UUID it keeps forever, and syncing uses an upsert, so re-syncing the
   same record (e.g. after a dropped connection) can never create a
   duplicate row in Supabase.
-- **History & Records** window — filter by day/week/month, see sync status
-  per row, edit a "Received" amount or a "Comment" after the fact, and
-  export to CSV.
+- **History & Records** window — filter by day/week/month or a custom
+  "From ... to ..." date range, see sync status per row, edit a "Received"
+  amount or a "Comment" after the fact, and export to CSV (UTF-8 with a
+  BOM, so non-Latin text like Persian or Arabic opens correctly in Excel).
 
 ## 1. Install
 
@@ -63,16 +80,6 @@ pip install -r requirements.txt
 
 That's the only third-party dependency (`requests`) — everything else
 (Tkinter, sqlite3, uuid, csv…) is part of the Python standard library.
-
-### Windows: build a standalone .exe instead
-
-For distributing the app without requiring a Python installation, run
-**`build_windows.bat`** (in this same folder) on a Windows PC. It creates
-a throwaway virtual environment, installs `requirements.txt` plus
-PyInstaller, and produces `dist\BuildTime.exe` — a single executable,
-with no unzipping, installation, or console window. Re-run it on that PC
-whenever a new version is released. For all other purposes, run
-`python3 main.py` as described below.
 
 ## 2. Run
 
@@ -111,6 +118,26 @@ into a "try again later" state — it never interrupts the timers or
 loses local data. The status bar and History window always show how many
 records are still waiting to sync.
 
+## 4. Build a standalone Windows .exe (optional)
+
+If you want to hand the app to someone without them installing Python at
+all, `build_windows.bat` (included here) packages everything into a
+single `dist\BuildTime.exe` using [PyInstaller](https://pyinstaller.org/).
+
+1. Copy the whole project folder onto a Windows PC that has Python 3.9+
+   installed (with "Add python.exe to PATH" checked during setup).
+2. Double-click `build_windows.bat`, or run it from a terminal.
+3. It creates a throwaway build environment, installs `requirements.txt`
+   plus PyInstaller into it, builds the `.exe`, then cleans up after
+   itself (the temporary venv, PyInstaller's `build\` folder, and the
+   generated `.spec` file) — leaving just `dist\BuildTime.exe` behind.
+
+That one file is everything — no installer, and no Python required on
+the machine that runs it. Re-run the script any time you release a new
+version. Want a custom icon? Open `build_windows.bat` and add
+`--icon=path\to\icon.ico` to the `pyinstaller` line, as noted in the
+script's own comments.
+
 ## How the data is organized
 
 The local schema is normalized (a `sessions` table plus a `session_items`
@@ -144,12 +171,18 @@ new numbers.
 - **One global hourly rate** applies to all tables, not a different rate
   per table (per-table rates would be a natural follow-up if you ever
   need, e.g., a pricier VIP table).
-- Duration billing is **exact by default** (no rounding); the optional
-  "round up to nearest N minutes" setting is off unless you turn it on.
+- Duration billing follows a **fixed tiered rule** (see the Features list
+  above), not a user-configurable rounding setting — the increment sizes
+  (1 hour minimum, then 10-minute blocks) are specific enough that they
+  replaced the old general-purpose "round up to nearest N minutes" option
+  rather than sitting alongside it.
 - Cloud sync is **manual by default** ("Sync Now" button) since you
   described wanting to sync "whenever internet is available and they
   wanted it" — automatic background sync is there as an opt-in toggle,
   not the default.
+- **Walk-in sales get a fixed label** ("Walk-in Sale") rather than an
+  editable name, and skip duration billing entirely (items cost only) —
+  since by definition there's no table and no timer involved.
 
 ## Project layout
 
@@ -162,13 +195,16 @@ buildtime/
 │   ├── main_window.py        # menu bar, search box, status bar, grid of table cards
 │   ├── table_card.py         # one table timer: idle → running → checkout,
 │   │                          # plus the inline item rows while running
+│   ├── walkin_card.py        # pinned Walk-in Sale card: same item rows and
+│   │                          # checkout as a table, no name, no stopwatch
 │   ├── settings_window.py    # Tables / Snacks & Drinks / Pricing / Cloud Sync tabs
+│   │                          # (locked/read-only while any stopwatch is running)
 │   └── history_window.py     # records browser, CSV export, edit Received
-├── test_database.py          # automated checks for the data layer (37 checks)
+├── test_database.py          # automated checks for the data layer (59 checks)
 ├── test_sync_manager.py      # automated checks for the sync layer (16 checks)
-├── build_windows.bat         # Windows-only: builds a standalone dist\BuildTime.exe
 ├── requirements.txt
 ├── supabase_schema.sql
+├── build_windows.bat         # packages the app into dist\BuildTime.exe (see step 4 above)
 └── README.md
 ```
 
@@ -180,7 +216,6 @@ behaves. Both currently pass in full.
 ## Possible future extensions (not built, in case you want them next)
 
 - Per-table hourly rates (e.g. a VIP room priced differently).
-- Walk-in snack/drink sales that aren't tied to a table.
 - Multi-device conflict handling beyond last-write-wins (fine for one
   front-desk computer; worth revisiting if two devices might edit the same
   record at once).

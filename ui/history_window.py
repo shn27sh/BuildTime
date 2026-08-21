@@ -14,7 +14,7 @@ class HistoryWindow(tk.Toplevel):
         self.app = app
         self.db = app.db
         self.title("History & Records")
-        self.geometry("920x520")
+        self.geometry("1040x520")
         self.transient(app.root)
 
         top = ttk.Frame(self, padding=8)
@@ -23,12 +23,34 @@ class HistoryWindow(tk.Toplevel):
         self.range_var = tk.StringVar(value="All time")
         ttk.Combobox(
             top, textvariable=self.range_var, state="readonly",
-            values=["Today", "This Week", "This Month", "All time"], width=14,
-        ).pack(side="left", padx=4)
+            values=["Today", "This Week", "This Month", "All time", "Custom Range"], width=14,
+        ).pack(side="left", padx=(4, 12))
+
+        # Custom "From ... to ..." range -- only editable once "Custom
+        # Range" is picked above, so it's clear these two fields aren't
+        # in effect otherwise. Defaults to the last 30 days so there's
+        # something sensible to tweak the moment it's enabled.
+        ttk.Label(top, text="From:").pack(side="left")
+        self.from_var = tk.StringVar(value=(date.today() - timedelta(days=30)).isoformat())
+        self.from_entry = ttk.Entry(top, textvariable=self.from_var, width=11, state="disabled")
+        self.from_entry.pack(side="left", padx=(4, 8))
+        self.from_entry.bind("<Return>", lambda e: self._apply_custom_range())
+
+        ttk.Label(top, text="to").pack(side="left")
+        self.to_var = tk.StringVar(value=date.today().isoformat())
+        self.to_entry = ttk.Entry(top, textvariable=self.to_var, width=11, state="disabled")
+        self.to_entry.pack(side="left", padx=(4, 8))
+        self.to_entry.bind("<Return>", lambda e: self._apply_custom_range())
+
+        self.apply_range_btn = ttk.Button(
+            top, text="Apply", command=self._apply_custom_range, state="disabled"
+        )
+        self.apply_range_btn.pack(side="left", padx=(0, 12))
+
         ttk.Button(top, text="Refresh", command=self.refresh).pack(side="left", padx=4)
         ttk.Button(top, text="Sync Now", command=self.app.sync_now).pack(side="left", padx=4)
         ttk.Button(top, text="Export CSV", command=self.export_csv).pack(side="left", padx=4)
-        self.range_var.trace_add("write", lambda *a: self.refresh())
+        self.range_var.trace_add("write", lambda *a: self._on_range_changed())
 
         cols = ("date", "table", "start", "end", "duration", "snacks", "drinks", "cost", "received", "comment", "synced")
         headers = ["Date", "Table", "Start", "End", "Duration", "Snacks", "Drinks", "Cost", "Received", "Comment", "Synced"]
@@ -43,6 +65,38 @@ class HistoryWindow(tk.Toplevel):
         self.summary_label.pack(anchor="w", padx=8, pady=(0, 8))
 
         self._rows_cache = []
+        self._custom_from = None
+        self._custom_to = None
+        self.refresh()
+
+    def _on_range_changed(self):
+        is_custom = self.range_var.get() == "Custom Range"
+        state = "normal" if is_custom else "disabled"
+        self.from_entry.config(state=state)
+        self.to_entry.config(state=state)
+        self.apply_range_btn.config(state=state)
+        if is_custom:
+            self._apply_custom_range()
+        else:
+            self.refresh()
+
+    def _apply_custom_range(self):
+        d_from = self.from_var.get().strip()
+        d_to = self.to_var.get().strip()
+        try:
+            date.fromisoformat(d_from)
+            date.fromisoformat(d_to)
+        except ValueError:
+            messagebox.showerror(
+                "Invalid date", "Please enter both dates as YYYY-MM-DD (e.g. 2026-01-31).", parent=self
+            )
+            return
+        if d_from > d_to:
+            messagebox.showerror(
+                "Invalid range", "The 'From' date must be on or before the 'to' date.", parent=self
+            )
+            return
+        self._custom_from, self._custom_to = d_from, d_to
         self.refresh()
 
     def _date_range(self):
@@ -55,6 +109,8 @@ class HistoryWindow(tk.Toplevel):
             return start.isoformat(), today.isoformat()
         if v == "This Month":
             return today.replace(day=1).isoformat(), today.isoformat()
+        if v == "Custom Range":
+            return self._custom_from, self._custom_to
         return None, None
 
     def refresh(self):
@@ -115,7 +171,7 @@ class HistoryWindow(tk.Toplevel):
         )
         if not path:
             return
-        with open(path, "w", newline="", encoding="utf-8") as fp:
+        with open(path, "w", newline="", encoding="utf-8-sig") as fp:
             w = csv.writer(fp)
             w.writerow(
                 ["Date", "Table", "Start", "End", "Duration (s)", "Snacks", "Drinks",

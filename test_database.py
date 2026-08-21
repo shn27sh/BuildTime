@@ -6,8 +6,9 @@ import os
 import sys
 import tempfile
 import time
+from decimal import Decimal
 
-from database import Database
+from database import Database, compute_billable_hours, compute_duration_cost
 
 failures = []
 
@@ -106,18 +107,107 @@ try:
     items_in_session = db.get_session_items(sid)
     check("decrementing an absent item is a safe no-op", all(r["item_name_snapshot"] != "Soda" for r in items_in_session))
 
-    # simulate ~1 hour, but we don't want the test to actually sleep an hour,
-    # so directly check the cost formula via stop_session's math using a tiny sleep instead
+    # simulate ~1 second running, then stop -- under the new tiered billing
+    # rule (see compute_billable_hours below), ANY duration up to and
+    # including 1 hour bills as a flat 1-hour minimum, so this is now a
+    # deterministic check rather than needing a sleep-based tolerance
+    # window against a proportional formula.
     time.sleep(1.2)
     stopped = db.stop_session(sid)
     check("status becomes awaiting_checkout after stop", stopped["status"] == "awaiting_checkout")
     check("duration_seconds is roughly 1s", 0 <= stopped["duration_seconds"] <= 3)
-    expected_duration_cost = (stopped["duration_seconds"] / 3600.0) * 5.00
-    check("duration_cost matches hourly formula",
-          abs(stopped["duration_cost"] - expected_duration_cost) < 0.01)
+    check("a few seconds bills as a flat 1-hour minimum",
+          abs(stopped["duration_cost"] - 5.00) < 1e-9)
     expected_total = stopped["items_cost"] + stopped["duration_cost"]
     check("total_cost = items_cost + duration_cost",
           abs(stopped["total_cost"] - expected_total) < 1e-9)
+
+    # --- tiered stopwatch billing rule (compute_billable_hours / compute_duration_cost) ---
+    # Pure-function checks against every worked example from the spec:
+    #   <= 1 hour bills as a flat 1-hour minimum; past 1 hour, every
+    #   *started* 10-minute block adds another 1/6 of the hourly rate.
+    # NOTE on "1 hour 34 minutes": the spec listed this as "1 hour + 3/6",
+    # but applying the spec's own formula literally --
+    #   extraTime=34min=2040s, extraBlocks=ceil(2040/600)=4 -> 1 + 4/6 --
+    # gives 4/6, not 3/6. It also has to be 4/6 to stay consistent with
+    # the neighboring examples: 1h30m is explicitly 3/6 and 1h40m is
+    # explicitly 4/6, and 1h34m falls strictly between those two
+    # boundaries, so it must land in the same block as 1h40m. Treating
+    # "1h34m -> 3/6" as a one-off typo and following the stated formula
+    # (which 16 of the 17 worked examples already agree with).
+    billable_cases = [
+        (1, Decimal(1), "1 second"),
+        (10 * 60, Decimal(1), "10 minutes"),
+        (47 * 60, Decimal(1), "47 minutes"),
+        (59 * 60 + 59, Decimal(1), "59 minutes 59 seconds"),
+        (3600, Decimal(1), "1 hour exactly"),
+        (3600 + 1, Decimal(1) + Decimal(1) / 6, "1 hour 1 second"),
+        (3600 + 10 * 60, Decimal(1) + Decimal(1) / 6, "1 hour 10 minutes"),
+        (3600 + 11 * 60, Decimal(1) + Decimal(2) / 6, "1 hour 11 minutes"),
+        (3600 + 20 * 60, Decimal(1) + Decimal(2) / 6, "1 hour 20 minutes"),
+        (3600 + 21 * 60, Decimal(1) + Decimal(3) / 6, "1 hour 21 minutes"),
+        (3600 + 30 * 60, Decimal(1) + Decimal(3) / 6, "1 hour 30 minutes"),
+        (3600 + 34 * 60, Decimal(1) + Decimal(4) / 6, "1 hour 34 minutes (see NOTE above)"),
+        (3600 + 40 * 60, Decimal(1) + Decimal(4) / 6, "1 hour 40 minutes"),
+        (3600 + 50 * 60, Decimal(1) + Decimal(5) / 6, "1 hour 50 minutes"),
+        (3600 + 59 * 60, Decimal(2), "1 hour 59 minutes (6/6 = 2 hours)"),
+        (2 * 3600, Decimal(2), "2 hours exactly"),
+        (2 * 3600 + 1, Decimal(2) + Decimal(1) / 6, "2 hours 1 second"),
+    ]
+    for secs, expected_hours, label in billable_cases:
+        got = compute_billable_hours(secs)
+        check(f"billable hours for {label}: expected {expected_hours}", got == expected_hours)
+
+    # A fraction of a second past a boundary still counts as having
+    # *started* the next block (ceiling behavior applies to fractional
+    # seconds too, not just whole-minute inputs).
+    check("0.5s past the 1-hour mark still starts the next block",
+          compute_billable_hours(3600.5) == Decimal(1) + Decimal(1) / 6)
+    check("0.5s past a 10-minute mark still starts the next block",
+          compute_billable_hours(3600 + 600.5) == Decimal(1) + Decimal(2) / 6)
+
+    # Money side: billable hours (a clean fraction) x an hourly rate that
+    # doesn't divide evenly by 6, rounded to the nearest cent. Computed via
+    # Decimal internally so the well-known float error in repeating
+    # fractions like 1/6 (0.1666...) can't leak into the charged amount.
+    check("$10.00/hr, 1h11m -> $13.33 (10 + 2*10/6 = 13.333... rounds to 13.33)",
+          compute_duration_cost(3600 + 11 * 60, 10.00) == 13.33)
+    check("$10.00/hr, 1h21m -> $15.00 (10 + 3*10/6 = 15.00 exactly)",
+          compute_duration_cost(3600 + 21 * 60, 10.00) == 15.00)
+    check("$5.00/hr, 1h1s -> $5.83 (5 + 5/6 = 5.8333... rounds to 5.83)",
+          compute_duration_cost(3600 + 1, 5.00) == 5.83)
+    check("$0/hr never crashes and bills $0 regardless of duration",
+          compute_duration_cost(3600 + 21 * 60, 0) == 0.0)
+
+    # --- full stop_session() integration for the >1 hour tier ---
+    # Rather than actually sleeping for over an hour, backdate a fresh
+    # session's start_time and let stop_session() compute against real
+    # wall-clock elapsed time -- this exercises the *actual* code path
+    # (including the datetime math and the DB round-trip), not just the
+    # pure function in isolation.
+    from datetime import datetime, timedelta
+
+    def start_and_backdate(seconds_ago):
+        new_sid = db.start_session(table["id"], table["name"])
+        backdated = (datetime.now() - timedelta(seconds=seconds_ago)).isoformat(timespec="seconds")
+        with db._connect() as conn:
+            conn.execute("UPDATE sessions SET start_time=? WHERE id=?", (backdated, new_sid))
+        return new_sid
+
+    sid_1h11m = start_and_backdate(3600 + 11 * 60)
+    stopped_1h11m = db.stop_session(sid_1h11m)
+    check("stop_session: 1h11m at $5/hr bills 1 + 2/6 hours = $6.67",
+          abs(stopped_1h11m["duration_cost"] - 6.67) < 0.01)
+
+    sid_1h59m = start_and_backdate(3600 + 59 * 60)
+    stopped_1h59m = db.stop_session(sid_1h59m)
+    check("stop_session: 1h59m at $5/hr bills a full 2 hours = $10.00",
+          abs(stopped_1h59m["duration_cost"] - 10.00) < 0.01)
+
+    sid_47m = start_and_backdate(47 * 60)
+    stopped_47m = db.stop_session(sid_47m)
+    check("stop_session: 47m at $5/hr still bills the 1-hour minimum = $5.00",
+          abs(stopped_47m["duration_cost"] - 5.00) < 0.01)
 
     # accidental stop -> resume
     db.resume_session(sid)
@@ -164,6 +254,68 @@ try:
     db.update_received_amount(sid, 99.99)
     unsynced = db.get_unsynced_sessions()
     check("editing received_amount re-flags session as unsynced", any(s["id"] == sid for s in unsynced))
+
+    # --- walk-in sales (no table, no timer) ---
+    from database import WALKIN_TABLE_ID, WALKIN_TABLE_NAME
+
+    wsid = db.start_walkin_sale()
+    wsession = db.get_session(wsid)
+    check("walk-in sale starts with status=walkin_open", wsession["status"] == "walkin_open")
+    check("walk-in sale uses the reserved table_id", wsession["table_id"] == WALKIN_TABLE_ID)
+    check("walk-in sale is labeled 'Walk-in Sale'", wsession["table_name_snapshot"] == WALKIN_TABLE_NAME)
+    check("walk-in sale has no hourly rate", wsession["hourly_rate_snapshot"] == 0)
+    check("walk-in sale is NOT counted as a running stopwatch",
+          not db.has_running_session())
+
+    db.add_or_increment_item(wsid, water, delta=2)
+    db.add_or_increment_item(wsid, chips, delta=1)
+    wsession = db.get_session(wsid)
+    expected_walkin_items_cost = 2 * water["price"] + 1 * chips["price"]
+    check("walk-in items_cost matches cart", abs(wsession["items_cost"] - expected_walkin_items_cost) < 1e-9)
+
+    wstopped = db.stop_walkin_sale(wsid)
+    check("Complete Sale moves status to walkin_checkout", wstopped["status"] == "walkin_checkout")
+    check("walk-in duration_cost is 0 (no timer)", wstopped["duration_cost"] == 0)
+    check("walk-in total_cost = items_cost only",
+          abs(wstopped["total_cost"] - wstopped["items_cost"]) < 1e-9)
+
+    db.resume_walkin_sale(wsid)
+    wresumed = db.get_session(wsid)
+    check("Back to Cart reverts to walkin_open", wresumed["status"] == "walkin_open")
+    check("Back to Cart clears total_cost", wresumed["total_cost"] is None)
+    still_there = db.get_session_items(wsid)
+    check("cart items survive Back to Cart", len(still_there) == 2)
+
+    db.stop_walkin_sale(wsid)
+    db.finish_session(wsid, 5.00, "walk-in test")
+    wfinished = db.get_session(wsid)
+    check("finish_session works for walk-in sales too", wfinished["status"] == "completed")
+    walkin_history = next((h for h in db.get_history() if h["id"] == wsid), None)
+    check("finished walk-in sale shows up in history", walkin_history is not None)
+    check("walk-in history row shows the Walk-in Sale label",
+          walkin_history is not None and walkin_history["table_name"] == WALKIN_TABLE_NAME)
+
+    # emptying a walk-in cart back to 0 items should drop the ghost session
+    wsid2 = db.start_walkin_sale()
+    db.add_or_increment_item(wsid2, water, delta=1)
+    db.add_or_increment_item(wsid2, water, delta=-1)  # back to 0
+    db.delete_session_if_empty(wsid2)
+    check("emptied walk-in cart is deleted, not left as a ghost session", db.get_session(wsid2) is None)
+
+    # a non-empty session must NOT be deleted by delete_session_if_empty
+    wsid3 = db.start_walkin_sale()
+    db.add_or_increment_item(wsid3, water, delta=1)
+    db.delete_session_if_empty(wsid3)
+    check("delete_session_if_empty is a no-op when items are still present", db.get_session(wsid3) is not None)
+
+    # an open walk-in cart still counts as "active" for crash recovery / close-warning...
+    active_now = db.get_active_sessions()
+    check("open walk-in cart counts as an active session", any(s["id"] == wsid3 for s in active_now))
+    # ...but never as a running *stopwatch* (that's specifically for tables)
+    check("open walk-in cart still doesn't count as a running stopwatch", not db.has_running_session())
+
+    # clean up wsid3 so it doesn't leak into the sync-bookkeeping counts below
+    db.finish_session(wsid3, 1.00)
 
     # --- duplicate-safe id generation ---
     ids_seen = set()

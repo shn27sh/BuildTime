@@ -8,9 +8,11 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from ui.table_card import TableCard
+from ui.walkin_card import WalkInCard
 from ui.settings_window import SettingsWindow
 from ui.history_window import HistoryWindow
 from sync_manager import SyncManager
+from database import WALKIN_TABLE_ID
 
 CARDS_PER_ROW = 3
 
@@ -20,15 +22,21 @@ class MainWindow:
         self.root = root
         self.db = db
         self.sync_manager = SyncManager(db)
-        self.cards = {}  # table_id -> TableCard
+        self.cards = {}  # table_id -> TableCard (plus WALKIN_TABLE_ID -> WalkInCard)
+        self.walkin_card = None
         self._all_tables = []  # current table list, in display order
         self.no_match_label = None
+        self.no_tables_label = None
         self.history_window = None
         self._auto_sync_job = None
         self._settings_windows = []  # open SettingsWindow instances (non-modal, can be several)
 
         root.title("BuildTime")
-        root.geometry("1000x700")
+        # Wide enough to show 3 table columns *plus* the pinned Walk-in Sale
+        # column without the user needing to resize on first launch — the
+        # card area only scrolls vertically, so a too-narrow window would
+        # otherwise clip that column with no way to reach it.
+        root.geometry("1250x700")
         root.minsize(700, 500)
 
         self._build_menu()
@@ -108,19 +116,36 @@ class MainWindow:
 
     def _apply_filter(self):
         """Show only the cards whose table name matches the search box
-        (e.g. typing "10" finds "Table 10" without scrolling to it)."""
+        (e.g. typing "10" finds "Table 10" without scrolling to it). The
+        Walk-in Sale card is pinned in its own column to the right of the
+        table grid -- it isn't a "table", so it never shifts where any
+        table card sits and is never affected by the search box."""
         if not self.cards:
             return
+
+        self.walkin_card.grid(row=0, column=CARDS_PER_ROW, padx=8, pady=8, sticky="nsew")
+        self.cards_frame.columnconfigure(CARDS_PER_ROW, weight=1)
+
+        for table_id, card in self.cards.items():
+            if table_id != WALKIN_TABLE_ID:
+                card.grid_forget()
+        if self.no_match_label:
+            self.no_match_label.grid_forget()
+        if self.no_tables_label:
+            self.no_tables_label.grid_forget()
+
+        if not self._all_tables:
+            # No configured tables at all -- the walk-in card still works
+            # fine on its own, so just note there are no tables alongside it.
+            if self.no_tables_label:
+                self.no_tables_label.grid(row=0, column=0, columnspan=CARDS_PER_ROW, sticky="nsew")
+            return
+
         query = self.search_var.get().strip().lower()
         matches = (
             [t for t in self._all_tables if query in t["name"].lower()]
             if query else list(self._all_tables)
         )
-
-        for card in self.cards.values():
-            card.grid_forget()
-        if self.no_match_label:
-            self.no_match_label.grid_forget()
 
         if not matches:
             if self.no_match_label:
@@ -174,16 +199,25 @@ class MainWindow:
             w.destroy()
         self.cards = {}
         self.no_match_label = None
+        self.no_tables_label = None
+
+        # The walk-in card isn't a configured table -- it's a fixed,
+        # always-on fixture independent of Settings \u25b8 Manage Tables, so
+        # it's created before, and regardless of, whether any tables exist.
+        self.walkin_card = WalkInCard(self.cards_frame, self)
+        self.cards[WALKIN_TABLE_ID] = self.walkin_card
+
         self._all_tables = self.db.list_tables(active_only=True)
         if not self._all_tables:
-            ttk.Label(
+            self.no_tables_label = ttk.Label(
                 self.cards_frame, text="No tables yet. Add one via Settings \u25b8 Manage Tables.",
                 foreground="gray", padding=20,
-            ).pack()
-            return
-        for table in self._all_tables:
-            card = TableCard(self.cards_frame, self, table)
-            self.cards[table["id"]] = card
+            )
+        else:
+            for table in self._all_tables:
+                card = TableCard(self.cards_frame, self, table)
+                self.cards[table["id"]] = card
+
         self.no_match_label = ttk.Label(
             self.cards_frame, text="No table matches your search.", foreground="gray", padding=20,
         )
@@ -234,6 +268,23 @@ class MainWindow:
                 window.refresh_lock_state(show_popup_if_locked=True)
             else:
                 self._settings_windows.remove(window)
+
+    def notify_items_catalog_changed(self):
+        """Call this whenever Settings adds, edits, hides, or shows an item.
+        A table's inline item buttons only get rebuilt on Start/Resume, but
+        Settings is locked the whole time any table is running, so that
+        gap never shows up there in practice. The Walk-in Sale card is
+        different -- its item buttons stay visible at all times and
+        Settings is deliberately NOT locked while its cart is just sitting
+        open, so without this it would keep showing a stale catalog until
+        the cart happened to cycle through Complete Sale/Finish. Every card
+        gets asked here (harmlessly a no-op for one that isn't currently
+        showing its item buttons) rather than special-casing which type of
+        card needs it."""
+        for card in self.cards.values():
+            refresh = getattr(card, "refresh_items_catalog", None)
+            if refresh:
+                refresh()
 
     def open_history(self):
         if self.history_window and self.history_window.winfo_exists():
@@ -294,7 +345,7 @@ class MainWindow:
             names = ", ".join(s["table_name_snapshot"] for s in active)
             if not messagebox.askyesno(
                 "Tables still active",
-                f"These tables still have unsaved sessions in progress: {names}\n\n"
+                f"These still have unsaved sessions in progress: {names}\n\n"
                 "Your data is safe in the local database and will still be here next time you "
                 "open the app. Close anyway?",
             ):
