@@ -8,7 +8,7 @@ import tempfile
 import time
 from decimal import Decimal
 
-from database import Database, compute_billable_hours, compute_duration_cost
+from database import Database, compute_billable_hours, compute_duration_cost, gregorian_to_shamsi
 
 failures = []
 
@@ -325,10 +325,103 @@ try:
         ids_seen.add(s)
     check("20 rapid session starts all got unique UUIDs", len(ids_seen) == 20)
 
+    # --- Shamsi (Solar Hijri / Persian) date, alongside the Gregorian date ---
+    check("gregorian_to_shamsi(None) is None (safe on a NULL column value)",
+          gregorian_to_shamsi(None) is None)
+    check("gregorian_to_shamsi('') is None", gregorian_to_shamsi("") is None)
+    # A handful of independently-documented Nowruz reference points (the
+    # Persian New Year always falls on the spring equinox, March 19-21).
+    check("1979-03-21 -> 1358-01-01 (well-documented historical reference)",
+          gregorian_to_shamsi("1979-03-21") == "1358-01-01")
+    check("2024-03-20 -> 1403-01-01", gregorian_to_shamsi("2024-03-20") == "1403-01-01")
+    check("2026-03-21 -> 1405-01-01", gregorian_to_shamsi("2026-03-21") == "1405-01-01")
+    check("1970-01-01 -> 1348-10-11 (Unix epoch, commonly cited)",
+          gregorian_to_shamsi("1970-01-01") == "1348-10-11")
+
+    # A new table session gets a shamsi_date written at start time, matching
+    # its Gregorian "date" column (same calendar day, two representations).
+    sid_shamsi = db.start_session(table["id"], table["name"])
+    session_shamsi = db.get_session(sid_shamsi)
+    check("new session has a shamsi_date", session_shamsi["shamsi_date"] is not None)
+    check("shamsi_date matches gregorian_to_shamsi(date) for the same row",
+          session_shamsi["shamsi_date"] == gregorian_to_shamsi(session_shamsi["date"]))
+    db.stop_session(sid_shamsi)
+    db.finish_session(sid_shamsi, 5.00)
+
+    # Same for a walk-in sale.
+    wsid_shamsi = db.start_walkin_sale()
+    walkin_shamsi_session = db.get_session(wsid_shamsi)
+    check("new walk-in sale also has a shamsi_date",
+          walkin_shamsi_session["shamsi_date"] == gregorian_to_shamsi(walkin_shamsi_session["date"]))
+    db.stop_walkin_sale(wsid_shamsi)
+    db.finish_session(wsid_shamsi, 1.00)
+
+    # get_history() (backed by the session_summary view) must surface it too.
+    hist_row = next(h for h in db.get_history() if h["id"] == sid_shamsi)
+    check("shamsi_date is present in get_history() rows (view was updated)",
+          hist_row["shamsi_date"] == session_shamsi["shamsi_date"])
+
 finally:
     os.unlink(db_path)
     for ext in ("-wal", "-shm"):
         p = db_path + ext
+        if os.path.exists(p):
+            os.unlink(p)
+
+# --- migration/backfill: a database created BEFORE shamsi_date existed ---
+# Manually build the *old* schema (no shamsi_date column at all) with some
+# pre-existing rows, exactly as a real user's existing buildtime.db would
+# look coming into this update, then open it with the current Database
+# class and confirm it migrates cleanly AND backfills old rows correctly
+# rather than leaving their shamsi_date blank forever.
+import sqlite3
+
+tmp2 = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+tmp2.close()
+old_db_path = tmp2.name
+try:
+    raw = sqlite3.connect(old_db_path)
+    raw.execute(
+        """CREATE TABLE sessions (
+            id TEXT PRIMARY KEY, table_id INTEGER NOT NULL, table_name_snapshot TEXT NOT NULL,
+            date TEXT NOT NULL, start_time TEXT NOT NULL, end_time TEXT, duration_seconds INTEGER,
+            hourly_rate_snapshot REAL NOT NULL, items_cost REAL NOT NULL DEFAULT 0,
+            duration_cost REAL, total_cost REAL, received_amount REAL, comment TEXT DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'running', synced INTEGER NOT NULL DEFAULT 0,
+            synced_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        )"""
+    )
+    raw.execute(
+        """INSERT INTO sessions (id, table_id, table_name_snapshot, date, start_time,
+           hourly_rate_snapshot, items_cost, status, synced, created_at, updated_at)
+           VALUES ('pre-existing-1', 1, 'Table 1', '2024-03-20', '2024-03-20T10:00:00',
+                   5.0, 0, 'completed', 0, '2024-03-20T10:00:00', '2024-03-20T10:00:00')"""
+    )
+    raw.commit()
+    raw.close()
+
+    # Confirm the OLD schema genuinely has no shamsi_date column, so the
+    # upcoming check is actually testing the migration, not a no-op.
+    check_conn = sqlite3.connect(old_db_path)
+    cols_before = [r[1] for r in check_conn.execute("PRAGMA table_info(sessions)")]
+    check_conn.close()
+    check("(sanity) the old schema truly has no shamsi_date column yet",
+          "shamsi_date" not in cols_before)
+
+    old_db = Database(db_path=old_db_path)
+    migrated_row = old_db.get_session("pre-existing-1")
+    check("migration added a usable shamsi_date to a pre-existing row",
+          migrated_row["shamsi_date"] == "1403-01-01")
+
+    # Re-opening again (column already exists this time) must not error or
+    # touch an already-populated value.
+    old_db2 = Database(db_path=old_db_path)
+    check("re-opening an already-migrated database is a harmless no-op",
+          old_db2.get_session("pre-existing-1")["shamsi_date"] == "1403-01-01")
+finally:
+    os.unlink(old_db_path)
+    for ext in ("-wal", "-shm"):
+        p = old_db_path + ext
         if os.path.exists(p):
             os.unlink(p)
 

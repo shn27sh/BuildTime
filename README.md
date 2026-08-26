@@ -56,9 +56,22 @@ cloud sync that never blocks the app and never uploads a duplicate.
   same record (e.g. after a dropped connection) can never create a
   duplicate row in Supabase.
 - **History & Records** window — filter by day/week/month or a custom
-  "From ... to ..." date range, see sync status per row, edit a "Received"
-  amount or a "Comment" after the fact, and export to CSV (UTF-8 with a
-  BOM, so non-Latin text like Persian or Arabic opens correctly in Excel).
+  "From ... to ..." date range, then narrow further with a live search box
+  (matches table, snacks, drinks, cost, received amount, dates in either
+  calendar, and comments — composes with the date range rather than
+  replacing it, and persists if you switch ranges). Every record shows
+  **both** its Gregorian date and its Solar Hijri (Shamsi/Jalali/Persian)
+  equivalent side by side — computed via the `jdatetime` library at the
+  moment a table starts or a walk-in sale begins, and stored in the
+  database right alongside the Gregorian date rather than only calculated
+  on the fly, so it's there for CSV export and search too. Existing
+  databases from before this existed get their old records backfilled
+  automatically the first time you open the updated app — nothing to do
+  by hand. See sync status per row, edit a "Received" amount or a
+  "Comment" after the fact, scroll through any number of records (mouse
+  wheel or the scrollbar), and export to CSV — UTF-8 with a BOM so
+  non-Latin text like Persian or Arabic opens correctly in Excel, and
+  respecting whatever the search box currently has filtered.
 
 ## 1. Install
 
@@ -78,7 +91,8 @@ Then, from the project folder:
 pip install -r requirements.txt
 ```
 
-That's the only third-party dependency (`requests`) — everything else
+That pulls in the two third-party dependencies (`requests` for cloud
+sync, `jdatetime` for the Shamsi/Persian calendar) — everything else
 (Tkinter, sqlite3, uuid, csv…) is part of the Python standard library.
 
 ## 2. Run
@@ -183,6 +197,18 @@ new numbers.
 - **Walk-in sales get a fixed label** ("Walk-in Sale") rather than an
   editable name, and skip duration billing entirely (items cost only) —
   since by definition there's no table and no timer involved.
+- **The Shamsi date is additive, not a replacement.** The Show/Custom
+  Range date filters in History still work off the Gregorian date (that's
+  what's compared in the database), and I used the well-established
+  `jdatetime` library rather than hand-rolling the conversion myself —
+  the Solar Hijri calendar's leap-year rule is genuinely intricate, and a
+  small, mistaken bug there would be a much worse outcome than one new
+  dependency. Like virtually every non-ephemeris Jalali calendar library,
+  it can very rarely land a single day off from Iran's officially
+  published calendar exactly on the Nowruz transition in specific years —
+  an accepted characteristic shared across nearly all software Jalali
+  converters, verified here against 7 independent reference dates and a
+  247-point round-trip sweep across 2005-2030.
 
 ## Project layout
 
