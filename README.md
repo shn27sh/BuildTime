@@ -10,6 +10,16 @@ cloud sync that never blocks the app and never uploads a duplicate.
 - **Multiple simultaneous table timers** — start as many as you're running
   at once (6 by default; add, rename, reorder, or hide tables any time via
   **Settings ▸ Manage Tables**, no code changes needed).
+- **Foldable table and walk-in cards** — fold cards to keep a busy grid
+  compact. Folded table cards keep their name, Start/Stop control, status,
+  elapsed time, and optional comment visible; unfold them to access time
+  adjustment, item controls, and full checkout details. The Walk-in Sale card
+  supports the same fold/unfold behavior, while checkout stays expanded so
+  its actions remain available.
+- **Active-state alerts** — a running table's elapsed time and live green
+  estimate blink while the stopwatch is active. After Stop, the elapsed time
+  and orange **Awaiting Checkout** status continue blinking until the session
+  is finished or resumed.
 - **Search box** — at the top of the main window, typing a table name or
   number (e.g. "10") instantly filters the grid down to matching tables,
   so you don't have to scroll through a long list to find one.
@@ -27,9 +37,10 @@ cloud sync that never blocks the app and never uploads a duplicate.
   local database, and the same History/sync as every table session — just
   without a duration or an hourly charge.
 - **Tiered hourly billing** — set an hourly rate once in
-  **Settings ▸ Pricing**. The first hour is always billed as a flat
-  1-hour minimum, even if a table only ran for a few seconds. Past that
-  first hour, billing switches to 10-minute blocks: every *started*
+  **Settings ▸ Pricing**. Sessions shorter than 15 minutes have no duration
+  charge, while their snack and drink items are still billed normally. At 15
+  minutes or longer, the first hour is billed as a flat 1-hour minimum. Past
+  that first hour, billing switches to 10-minute blocks: every *started*
   10-minute increment adds another 1/6 of the hourly rate (so 1h11m
   bills as 1 hour + 2/6, 1h21m as 1 hour + 3/6, and so on). The live
   "Running · est. $X.XX" estimate and the final charge after Stop always
@@ -91,7 +102,9 @@ cloud sync that never blocks the app and never uploads a duplicate.
   "Comment" after the fact, scroll through any number of records (mouse
   wheel or the scrollbar), and export to CSV — UTF-8 with a BOM so
   non-Latin text like Persian or Arabic opens correctly in Excel, and
-  respecting whatever the search box currently has filtered.
+  respecting whatever the search box currently has filtered. Exported
+  durations use the same human-readable hours/minutes/seconds format shown
+  in the History list rather than raw seconds.
 - **True modal popups** — Settings, History, and their own sub-dialogs
   (Add/Edit Item, Edit Received) block the main window while open, the
   same way a native Windows modal dialog does: clicking through to a
