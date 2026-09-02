@@ -13,6 +13,7 @@ from ui.settings_window import SettingsWindow
 from ui.history_window import HistoryWindow
 from sync_manager import SyncManager
 from database import WALKIN_TABLE_ID
+from ui.theme import COLORS, apply_theme, make_brick_logo
 
 CARDS_PER_ROW = 3
 
@@ -32,6 +33,7 @@ class MainWindow:
         self._settings_windows = []  # open SettingsWindow instances (non-modal, can be several)
 
         root.title("BuildTime")
+        apply_theme(root)
         # Wide enough to show 3 table columns *plus* the pinned Walk-in Sale
         # column without the user needing to resize on first launch — the
         # card area only scrolls vertically, so a too-narrow window would
@@ -40,6 +42,7 @@ class MainWindow:
         root.minsize(700, 500)
 
         self._build_menu()
+        self._build_brand_header()
         self._build_status_bar()
         self._build_search_bar()
         self._build_scrollable_area()
@@ -52,6 +55,18 @@ class MainWindow:
     # ------------------------------------------------------------------
     # Menu
     # ------------------------------------------------------------------
+    def _build_brand_header(self):
+        header = tk.Frame(self.root, bg=COLORS["red"], height=74)
+        header.pack(side="top", fill="x")
+        header.pack_propagate(False)
+        logo = make_brick_logo(header, 46)
+        logo.pack(side="left", padx=(18, 8), pady=12)
+        brand = tk.Frame(header, bg=COLORS["red"])
+        brand.pack(side="left", pady=10)
+        tk.Label(brand, text="BuildTime", bg=COLORS["red"], fg="white", font=("Segoe UI", 18, "bold")).pack(anchor="w")
+        tk.Label(brand, text="LEGO CENTER OPERATIONS", bg=COLORS["red"], fg="#ffd92f", font=("Segoe UI", 8, "bold")).pack(anchor="w")
+        tk.Label(header, text="TABLES  /  SALES  /  CONTROL", bg=COLORS["red"], fg="#ffd9dc", font=("Segoe UI", 9, "bold")).pack(side="right", padx=20)
+
     def _build_menu(self):
         menubar = tk.Menu(self.root)
 
@@ -85,9 +100,9 @@ class MainWindow:
     # Status bar
     # ------------------------------------------------------------------
     def _build_status_bar(self):
-        bar = ttk.Frame(self.root, relief="sunken")
+        bar = ttk.Frame(self.root, padding=(12, 5), style="Surface.TFrame")
         bar.pack(side="bottom", fill="x")
-        self.status_label = ttk.Label(bar, text="", anchor="w", padding=(8, 2))
+        self.status_label = ttk.Label(bar, text="", anchor="w", style="Muted.TLabel")
         self.status_label.pack(side="left", fill="x", expand=True)
         self.refresh_status_bar()
 
@@ -103,14 +118,15 @@ class MainWindow:
     # Search bar (filter the table grid by name/number as you type)
     # ------------------------------------------------------------------
     def _build_search_bar(self):
-        bar = ttk.Frame(self.root, padding=(8, 6))
+        bar = ttk.Frame(self.root, padding=(18, 14, 18, 10), style="Surface.TFrame")
         bar.pack(side="top", fill="x")
-        ttk.Label(bar, text="Search table:").pack(side="left", padx=(0, 6))
+        ttk.Label(bar, text="TABLES", style="Title.TLabel").pack(side="left", padx=(0, 22))
+        ttk.Label(bar, text="Search table:", style="Muted.TLabel").pack(side="left", padx=(0, 6))
         self.search_var = tk.StringVar()
         entry = ttk.Entry(bar, textvariable=self.search_var)
         entry.pack(side="left", fill="x", expand=True)
         self.search_var.trace_add("write", lambda *_args: self._apply_filter())
-        ttk.Button(bar, text="Clear", command=lambda: self.search_var.set("")).pack(
+        ttk.Button(bar, text="Clear", style="Accent.TButton", command=lambda: self.search_var.set("")).pack(
             side="left", padx=(6, 0)
         )
 
@@ -162,10 +178,10 @@ class MainWindow:
     # Scrollable card area
     # ------------------------------------------------------------------
     def _build_scrollable_area(self):
-        outer = ttk.Frame(self.root)
+        outer = ttk.Frame(self.root, padding=(12, 0, 12, 12), style="Surface.TFrame")
         outer.pack(fill="both", expand=True)
 
-        canvas = tk.Canvas(outer, highlightthickness=0)
+        canvas = tk.Canvas(outer, highlightthickness=0, bg=COLORS["canvas"])
         scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
         self.cards_frame = ttk.Frame(canvas)
 

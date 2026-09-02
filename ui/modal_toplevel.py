@@ -21,11 +21,14 @@ this base class's destroy() runs either way.
 """
 import tkinter as tk
 
+from ui.theme import COLORS
+
 
 class ModalToplevel(tk.Toplevel):
     def __init__(self, parent, use_transient=True):
         super().__init__(parent)
         self._modal_parent = parent
+        self.configure(background=COLORS["canvas"])
 
         # transient() ties this window to its parent at the window-manager
         # level, which is also what makes Windows drop the Minimize/

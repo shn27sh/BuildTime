@@ -21,6 +21,7 @@ from tkinter import ttk, messagebox
 from datetime import datetime
 
 from database import compute_duration_cost, validate_discount_percent, apply_discount
+from ui.theme import COLORS
 
 
 class TableCard(ttk.LabelFrame):
@@ -57,8 +58,8 @@ class TableCard(ttk.LabelFrame):
         self.btn_frame = ttk.Frame(self)
         self.btn_frame.pack(fill="x", pady=(4, 0))
 
-        self.start_btn = ttk.Button(self.btn_frame, text="\u25b6 Start", command=self.on_start)
-        self.stop_btn = ttk.Button(self.btn_frame, text="\u25a0 Stop", command=self.on_stop)
+        self.start_btn = ttk.Button(self.btn_frame, text="\u25b6 Start", style="Start.TButton", command=self.on_start)
+        self.stop_btn = ttk.Button(self.btn_frame, text="\u25a0 Stop", style="Stop.TButton", command=self.on_stop)
 
         self.comment_var = tk.StringVar()
         self.comment_var.trace_add("write", lambda *a: self._on_comment_changed())
@@ -132,10 +133,10 @@ class TableCard(ttk.LabelFrame):
 
         checkout_btns = ttk.Frame(self.checkout_frame)
         checkout_btns.pack(fill="x")
-        ttk.Button(checkout_btns, text="\u2713 Finish", command=self.on_finish).pack(
+        ttk.Button(checkout_btns, text="\u2713 Finish", style="Accent.TButton", command=self.on_finish).pack(
             side="left", expand=True, fill="x"
         )
-        ttk.Button(checkout_btns, text="\u21ba Resume", command=self.on_resume).pack(
+        ttk.Button(checkout_btns, text="\u21ba Resume", style="Start.TButton", command=self.on_resume).pack(
             side="left", expand=True, fill="x", padx=(4, 0)
         )
 
@@ -482,7 +483,7 @@ class TableCard(ttk.LabelFrame):
             self._blink_job = None
             return
         self._blink_on = not self._blink_on
-        color = self._blink_color if self._blink_on else "gray"
+        color = self._blink_color if self._blink_on else COLORS["muted"]
         self.timer_label.config(foreground=color)
         self.status_label.config(foreground=color)
         self._blink_job = self.after(650, self._blink)

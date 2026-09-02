@@ -20,6 +20,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from database import WALKIN_TABLE_NAME
+from ui.theme import COLORS
 
 
 class WalkInCard(ttk.LabelFrame):
@@ -49,7 +50,7 @@ class WalkInCard(ttk.LabelFrame):
         self.compact_comment_frame.pack(fill="x", pady=(8, 0))
 
         ttk.Label(
-            self, text="Snacks & drinks not tied to a table", foreground="gray",
+            self, text="Snacks & drinks not tied to a table", foreground=COLORS["muted"],
             wraplength=190, justify="left",
         ).pack(anchor="w", pady=(0, 6))
 
@@ -73,10 +74,10 @@ class WalkInCard(ttk.LabelFrame):
 
         checkout_btns = ttk.Frame(self.checkout_frame)
         checkout_btns.pack(fill="x")
-        ttk.Button(checkout_btns, text="\u2713 Finish", command=self.on_finish).pack(
+        ttk.Button(checkout_btns, text="\u2713 Finish", style="Accent.TButton", command=self.on_finish).pack(
             side="left", expand=True, fill="x"
         )
-        ttk.Button(checkout_btns, text="\u2190 Back to Cart", command=self.on_back_to_cart).pack(
+        ttk.Button(checkout_btns, text="\u2190 Back to Cart", style="Start.TButton", command=self.on_back_to_cart).pack(
             side="left", expand=True, fill="x", padx=(4, 0)
         )
 
@@ -89,7 +90,7 @@ class WalkInCard(ttk.LabelFrame):
         self.items_totals_label.pack(anchor="e", pady=(6, 0))
 
         self.complete_sale_btn = ttk.Button(
-            self.items_section, text="Complete Sale", command=self.on_complete_sale
+            self.items_section, text="Complete Sale", style="Checkout.TButton", command=self.on_complete_sale
         )
         self.complete_sale_btn.pack(fill="x", pady=(8, 0))
 

@@ -7,6 +7,11 @@ cloud sync that never blocks the app and never uploads a duplicate.
 
 ## Features
 
+- **LEGO center visual theme** — the desktop interface uses a cohesive red
+  brand header with a LEGO brick mark, supported by LEGO-inspired yellow,
+  blue, and green action colors. Shared typography, spacing, input styling,
+  tables, tabs, status states, and card controls keep the main workspace and
+  its dialogs visually consistent while remaining a native Tkinter app.
 - **Multiple simultaneous table timers** — start as many as you're running
   at once (6 by default; add, rename, reorder, or hide tables any time via
   **Settings ▸ Manage Tables**, no code changes needed).
