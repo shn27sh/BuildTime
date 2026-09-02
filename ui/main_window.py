@@ -246,12 +246,29 @@ class MainWindow:
     # Settings / history windows
     # ------------------------------------------------------------------
     def open_settings(self, tab=0):
+        # Settings is now a true modal dialog, so there's only ever one --
+        # if it's already open, just switch it to the requested tab and
+        # bring it forward rather than trying to open a second one (which
+        # its own grab would block anyway; this is the same
+        # already-open-so-just-refocus guard open_history() below uses).
+        if self._settings_windows:
+            existing = self._settings_windows[0]
+            if existing.winfo_exists():
+                existing._notebook.select(tab)
+                existing.lift()
+                existing.focus_force()
+                self.refresh_status_bar()
+                return
         SettingsWindow(self, initial_tab=tab)
         self.refresh_status_bar()
 
     def register_settings_window(self, window):
-        """Settings is non-modal, so more than one can be open at once —
-        track every open instance so all of them lock/unlock together."""
+        """Settings is a true modal dialog, so in practice there's only
+        ever one of these at a time now -- kept list-based rather than a
+        single optional reference anyway, since the live-lock
+        notification below doesn't care how many there are, and there's
+        no reason to touch otherwise-working, already-tested code for a
+        difference that's now purely cosmetic."""
         self._settings_windows.append(window)
 
     def unregister_settings_window(self, window):
@@ -340,6 +357,19 @@ class MainWindow:
     # Close
     # ------------------------------------------------------------------
     def _on_close(self):
+        # A native modal dialog also blocks the owner window from being
+        # closed while it's open (Alt+F4 on a window with an active modal
+        # child typically just reactivates the child) -- grab_current()
+        # is Tkinter's own way to ask "what currently holds this
+        # application's grab, if anything", so this works for Settings,
+        # History, or any nested dialog between them without needing to
+        # track each one specifically here.
+        modal = self.root.grab_current()
+        if modal is not None and modal is not self.root:
+            modal.bell()
+            modal.lift()
+            modal.focus_force()
+            return
         active = self.db.get_active_sessions()
         if active:
             names = ", ".join(s["table_name_snapshot"] for s in active)

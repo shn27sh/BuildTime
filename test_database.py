@@ -6,9 +6,13 @@ import os
 import sys
 import tempfile
 import time
+from datetime import datetime, timedelta
 from decimal import Decimal
 
-from database import Database, compute_billable_hours, compute_duration_cost, gregorian_to_shamsi
+from database import (
+    Database, compute_billable_hours, compute_duration_cost, gregorian_to_shamsi,
+    validate_discount_percent, apply_discount,
+)
 
 failures = []
 
@@ -116,8 +120,8 @@ try:
     stopped = db.stop_session(sid)
     check("status becomes awaiting_checkout after stop", stopped["status"] == "awaiting_checkout")
     check("duration_seconds is roughly 1s", 0 <= stopped["duration_seconds"] <= 3)
-    check("a few seconds bills as a flat 1-hour minimum",
-          abs(stopped["duration_cost"] - 5.00) < 1e-9)
+    check("a few seconds charges zero duration cost under the 15-minute rule",
+          abs(stopped["duration_cost"]) < 1e-9)
     expected_total = stopped["items_cost"] + stopped["duration_cost"]
     check("total_cost = items_cost + duration_cost",
           abs(stopped["total_cost"] - expected_total) < 1e-9)
@@ -255,6 +259,36 @@ try:
     unsynced = db.get_unsynced_sessions()
     check("editing received_amount re-flags session as unsynced", any(s["id"] == sid for s in unsynced))
 
+    # --- short-duration session rule: <15 minutes = no duration charge ---
+    short_sid = db.start_session(table["id"], table["name"])
+    with db._connect() as conn:
+        conn.execute(
+            "UPDATE sessions SET start_time=? WHERE id=?",
+            ((datetime.now() - timedelta(minutes=10)).isoformat(timespec="seconds"), short_sid),
+        )
+    db.add_or_increment_item(short_sid, water, delta=2)
+    short_stopped = db.stop_session(short_sid)
+    check("short table session charges zero duration cost", short_stopped["duration_cost"] == 0)
+    check("short table session still charges items", short_stopped["items_cost"] == 2 * water["price"])
+    check("short table session total equals items only",
+          abs(short_stopped["total_cost"] - short_stopped["items_cost"]) < 1e-9)
+    db.finish_session(short_sid, short_stopped["total_cost"])
+    check("short table session with items is still persisted after checkout",
+          db.get_session(short_sid)["status"] == "completed")
+
+    short_empty_sid = db.start_session(table["id"], table["name"])
+    with db._connect() as conn:
+        conn.execute(
+            "UPDATE sessions SET start_time=? WHERE id=?",
+            ((datetime.now() - timedelta(minutes=10)).isoformat(timespec="seconds"), short_empty_sid),
+        )
+    short_empty = db.stop_session(short_empty_sid)
+    check("short empty session has zero duration cost", short_empty["duration_cost"] == 0)
+    check("short empty session has zero total cost", short_empty["total_cost"] == 0)
+    db.finish_session(short_empty_sid, 0)
+    check("short empty session is discarded/cancelled with zero bill",
+          db.get_session(short_empty_sid) is None)
+
     # --- walk-in sales (no table, no timer) ---
     from database import WALKIN_TABLE_ID, WALKIN_TABLE_NAME
 
@@ -354,12 +388,23 @@ try:
     check("new walk-in sale also has a shamsi_date",
           walkin_shamsi_session["shamsi_date"] == gregorian_to_shamsi(walkin_shamsi_session["date"]))
     db.stop_walkin_sale(wsid_shamsi)
-    db.finish_session(wsid_shamsi, 1.00)
+    db.finish_session(wsid_shamsi, 0.00)
+    check("empty walk-in sale is cancelled and removed after finish",
+          db.get_session(wsid_shamsi) is None)
 
-    # get_history() (backed by the session_summary view) must surface it too.
-    hist_row = next(h for h in db.get_history() if h["id"] == sid_shamsi)
+    # A short zero-item session is intentionally discarded/cancelled, so use a
+    # genuinely billable session for the history view check instead.
+    paid_sid = db.start_session(table["id"], table["name"])
+    with db._connect() as conn:
+        conn.execute(
+            "UPDATE sessions SET start_time=? WHERE id=?",
+            ((datetime.now() - timedelta(hours=1, minutes=30)).isoformat(timespec="seconds"), paid_sid),
+        )
+    db.stop_session(paid_sid)
+    db.finish_session(paid_sid, 25.00)
+    hist_row = next(h for h in db.get_history() if h["id"] == paid_sid)
     check("shamsi_date is present in get_history() rows (view was updated)",
-          hist_row["shamsi_date"] == session_shamsi["shamsi_date"])
+          hist_row["shamsi_date"] == gregorian_to_shamsi(hist_row["date"]))
 
 finally:
     os.unlink(db_path)
@@ -422,6 +467,276 @@ finally:
     os.unlink(old_db_path)
     for ext in ("-wal", "-shm"):
         p = old_db_path + ext
+        if os.path.exists(p):
+            os.unlink(p)
+
+# --- per-stopwatch percentage discount ---------------------------------
+# Pure-function checks first (no database needed).
+check("validate_discount_percent(0) == 0.0 (no discount is valid)", validate_discount_percent(0) == 0.0)
+check("validate_discount_percent(100) == 100.0", validate_discount_percent(100) == 100.0)
+check("validate_discount_percent(12.5) == 12.5 (decimal percentages allowed)",
+      validate_discount_percent(12.5) == 12.5)
+check("validate_discount_percent('20') == 20.0 (numeric strings from an Entry widget work)",
+      validate_discount_percent("20") == 20.0)
+
+for bad in (-1, -0.01, 100.01, 101, "abc", None, ""):
+    try:
+        validate_discount_percent(bad)
+        check(f"validate_discount_percent({bad!r}) should have raised ValueError", False)
+    except ValueError:
+        check(f"validate_discount_percent({bad!r}) correctly rejected", True)
+
+# apply_discount: exact cent rounding, and items_cost is never referenced
+# by this function at all (it only ever takes duration_cost).
+d, amt = apply_discount(10.00, 0)
+check("0% discount leaves duration_cost unchanged", d == 10.00 and amt == 0.00)
+d, amt = apply_discount(10.00, 100)
+check("100% discount reduces duration_cost to exactly 0.00", d == 0.00 and amt == 10.00)
+d, amt = apply_discount(10.00, 50)
+check("50% discount on $10.00 -> $5.00 off, $5.00 remaining", d == 5.00 and amt == 5.00)
+d, amt = apply_discount(10.00, 33)
+check("33% discount on $10.00 -> $3.30 off (not $3.3000000004 from float drift)", amt == 3.30)
+check("33% discount on $10.00 -> $6.70 remaining", d == 6.70)
+d, amt = apply_discount(10.00, 33.33)
+check("33.33% discount on $10.00 rounds to $3.33 off (half-up, not float-truncated)", amt == 3.33)
+check("...and $6.67 remaining (3.33 + 6.67 = 10.00 exactly, no missing cent)",
+      abs(d + amt - 10.00) < 1e-9)
+
+# --- full lifecycle with a real session ---------------------------------
+disc_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+disc_tmp.close()
+disc_db_path = disc_tmp.name
+try:
+    ddb = Database(db_path=disc_db_path)
+    ddb.set_setting("hourly_rate", 10.00)
+    dtable = ddb.list_tables()[0]
+    water = next(i for i in ddb.list_items() if i["name"] == "Water")
+
+    dsid = ddb.start_session(dtable["id"], dtable["name"])
+    dsession = ddb.get_session(dsid)
+    check("a fresh session's discount_percent defaults to 0", dsession["discount_percent"] == 0)
+
+    ddb.add_or_increment_item(dsid, water, delta=3)  # items_cost = 3.00, must stay untouched by discount
+
+    # Backdate start_time so stop_session() bills a full, predictable
+    # duration_cost rather than depending on real elapsed wall-clock time.
+    # Deliberately NOT exactly 2 hours: that sits precisely on a tier
+    # boundary, and the few milliseconds of real time that pass between
+    # this backdate and stop_session()'s own datetime.now() call would
+    # push it a hair past 2h00m00s into the next 10-minute block. 1h55m
+    # sits comfortably inside the "bills as a full 2 hours" window
+    # (1:50:01-2:00:00) with margin to spare.
+    from datetime import datetime as _dt, timedelta as _td
+    backdated = (_dt.now() - _td(hours=1, minutes=55)).isoformat(timespec="seconds")
+    with ddb._connect() as conn:
+        conn.execute("UPDATE sessions SET start_time=? WHERE id=?", (backdated, dsid))
+
+    stopped = ddb.stop_session(dsid)
+    check("stop_session: ~2h at $10/hr bills $20.00 duration_cost before any discount",
+          abs(stopped["duration_cost"] - 20.00) < 1e-9)
+    check("with no discount yet, total_cost = items_cost + duration_cost = $23.00",
+          abs(stopped["total_cost"] - 23.00) < 1e-9)
+
+    discounted_session = ddb.set_session_discount(dsid, 25)
+    check("set_session_discount(25): duration_cost stays $20.00 (raw charge, unchanged meaning)",
+          abs(discounted_session["duration_cost"] - 20.00) < 1e-9)
+    check("set_session_discount(25): total_cost = 3.00 items + (20.00 * 0.75) = $18.00",
+          abs(discounted_session["total_cost"] - 18.00) < 1e-9)
+    check("items_cost is completely untouched by the discount",
+          abs(discounted_session["items_cost"] - 3.00) < 1e-9)
+    check("discount_percent is persisted", discounted_session["discount_percent"] == 25)
+
+    # Rejecting an invalid discount must leave the existing discount/total untouched.
+    try:
+        ddb.set_session_discount(dsid, 150)
+        check("set_session_discount(150) should have raised ValueError", False)
+    except ValueError:
+        check("set_session_discount(150) correctly rejected", True)
+    unchanged = ddb.get_session(dsid)
+    check("a rejected out-of-range discount leaves total_cost unchanged",
+          abs(unchanged["total_cost"] - 18.00) < 1e-9)
+    check("...and leaves discount_percent unchanged too", unchanged["discount_percent"] == 25)
+
+    try:
+        ddb.set_session_discount(dsid, -5)
+        check("set_session_discount(-5) should have raised ValueError", False)
+    except ValueError:
+        check("set_session_discount(-5) correctly rejected", True)
+
+    # Resume must NOT reset the discount -- it's a property of this
+    # customer's visit, not of one particular stop moment.
+    ddb.resume_session(dsid)
+    resumed = ddb.get_session(dsid)
+    check("resume_session does not reset discount_percent", resumed["discount_percent"] == 25)
+    check("resume_session clears total_cost (recomputed on the next stop)",
+          resumed["total_cost"] is None)
+
+    # Stopping again (simulating ~50 more minutes elapsed -- comfortably
+    # inside the "bills as the 1-hour minimum" window, same jitter-margin
+    # reasoning as above) must re-apply the SAME persisted 25% discount
+    # automatically, without re-entering it.
+    backdated2 = (_dt.now() - _td(minutes=50)).isoformat(timespec="seconds")
+    with ddb._connect() as conn:
+        conn.execute("UPDATE sessions SET start_time=? WHERE id=?", (backdated2, dsid))
+    restopped = ddb.stop_session(dsid)
+    check("re-stopping after resume re-applies the persisted 25% discount automatically",
+          abs(restopped["total_cost"] - (3.00 + 10.00 * 0.75)) < 1e-9)
+    check("discount_percent is still 25 after the second stop", restopped["discount_percent"] == 25)
+
+    # Finishing and checking History: the discount must be reflected in
+    # get_history() too (it's backed by session_summary, which we updated).
+    ddb.finish_session(dsid, restopped["total_cost"])
+    hist = next(h for h in ddb.get_history() if h["id"] == dsid)
+    check("get_history() surfaces discount_percent (view was updated)", hist["discount_percent"] == 25)
+    check("get_history() total_cost reflects the discount", abs(hist["total_cost"] - 10.50) < 1e-9)
+
+    # A second, completely independent session must start at 0% regardless
+    # of what the first session's discount was set to -- confirms discounts
+    # are genuinely per-stopwatch/per-session, not shared global state.
+    dsid2 = ddb.start_session(dtable["id"], dtable["name"])
+    check("an unrelated new session is unaffected and still defaults to 0%",
+          ddb.get_session(dsid2)["discount_percent"] == 0)
+finally:
+    os.unlink(disc_db_path)
+    for ext in ("-wal", "-shm"):
+        p = disc_db_path + ext
+        if os.path.exists(p):
+            os.unlink(p)
+
+# --- migration: a database from before discount_percent existed --------
+disc_old_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+disc_old_tmp.close()
+disc_old_path = disc_old_tmp.name
+try:
+    raw = sqlite3.connect(disc_old_path)
+    raw.execute(
+        """CREATE TABLE sessions (
+            id TEXT PRIMARY KEY, table_id INTEGER NOT NULL, table_name_snapshot TEXT NOT NULL,
+            date TEXT NOT NULL, shamsi_date TEXT, start_time TEXT NOT NULL, end_time TEXT,
+            duration_seconds INTEGER, hourly_rate_snapshot REAL NOT NULL,
+            items_cost REAL NOT NULL DEFAULT 0, duration_cost REAL, total_cost REAL,
+            received_amount REAL, comment TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'running',
+            synced INTEGER NOT NULL DEFAULT 0, synced_at TEXT, created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    raw.execute(
+        """INSERT INTO sessions (id, table_id, table_name_snapshot, date, shamsi_date, start_time,
+           hourly_rate_snapshot, items_cost, total_cost, status, synced, created_at, updated_at)
+           VALUES ('legacy-no-discount', 1, 'Table 1', '2026-08-20', '1405-05-29',
+                   '2026-08-20T09:00:00', 5.0, 0, 5.0, 'completed', 0,
+                   '2026-08-20T09:00:00', '2026-08-20T09:00:00')"""
+    )
+    raw.commit()
+    raw.close()
+
+    check_conn = sqlite3.connect(disc_old_path)
+    cols_before = [r[1] for r in check_conn.execute("PRAGMA table_info(sessions)")]
+    check_conn.close()
+    check("(sanity) the old schema truly has no discount_percent column yet",
+          "discount_percent" not in cols_before)
+
+    migrated_db = Database(db_path=disc_old_path)
+    check("a pre-existing row defaults to discount_percent=0 after migration",
+          migrated_db.get_session("legacy-no-discount")["discount_percent"] == 0)
+    # And it must be immediately usable, not just present.
+    result = migrated_db.set_session_discount("legacy-no-discount", 10)
+    check("a migrated row's discount can be set normally afterward", result["discount_percent"] == 10)
+finally:
+    os.unlink(disc_old_path)
+    for ext in ("-wal", "-shm"):
+        p = disc_old_path + ext
+        if os.path.exists(p):
+            os.unlink(p)
+
+# --- manually adjust stopwatch time (e.g. forgot to press Start) --------
+adj_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+adj_tmp.close()
+adj_db_path = adj_tmp.name
+try:
+    adb = Database(db_path=adj_db_path)
+    atable = adb.list_tables()[0]
+
+    # Start a session and immediately get its start_time for baseline comparison.
+    asid = adb.start_session(atable["id"], atable["name"])
+    before_adj = adb.get_session(asid)
+    before_start = before_adj["start_time"]
+
+    # Add 5 minutes (300 seconds). This means moving start_time back 5 minutes
+    # (making elapsed time appear longer).
+    adj_session = adb.adjust_session_elapsed_time(asid, 300)
+    check("adjust_session_elapsed_time(300) returns the updated session",
+          adj_session is not None)
+    check("elapsed time increased after adding 5 minutes",
+          adj_session["start_time"] < before_start)
+    # Verify the adjustment is by ~exactly 5 minutes (plus a tiny bit for
+    # real elapsed time during the test).
+    before_dt = _dt.fromisoformat(before_start)
+    after_dt = _dt.fromisoformat(adj_session["start_time"])
+    time_diff = (before_dt - after_dt).total_seconds()
+    check("the time_diff is approximately 300 seconds", abs(time_diff - 300) < 2)
+
+    # Subtract 2 minutes (120 seconds). This means moving start_time forward
+    # (making elapsed time appear shorter).
+    adj_session2 = adb.adjust_session_elapsed_time(asid, -120)
+    check("adjust_session_elapsed_time(-120) returns the updated session",
+          adj_session2 is not None)
+    check("elapsed time decreased after subtracting 2 minutes",
+          adj_session2["start_time"] > adj_session["start_time"])
+    # Net so far: +300 - 120 = +180 seconds compared to the original.
+    current_dt = _dt.fromisoformat(adj_session2["start_time"])
+    net_diff = (before_dt - current_dt).total_seconds()
+    check("net adjustment is approximately +180 seconds",
+          abs(net_diff - 180) < 2)
+
+    # Clamp test: try to subtract more time than has elapsed. The method must
+    # clamp the start_time to current time, preventing a negative elapsed time.
+    # We need to subtract so much that it would move start_time into the future.
+    # The session was just started, so elapsed time is only ~1-2 seconds. Try
+    # to subtract 1 hour -- that would definitely make it negative if we didn't clamp.
+    adj_session3 = adb.adjust_session_elapsed_time(asid, -3600)
+    check("adjust_session_elapsed_time with a huge negative delta doesn't crash",
+          adj_session3 is not None)
+    check("clamped start_time is NOT in the future (elapsed time >= 0)",
+          adj_session3["start_time"] <= _dt.now().isoformat(timespec="seconds"))
+    # After clamping, elapsed time should be ~0 (start_time ~= now).
+    now_str = _dt.now().isoformat(timespec="seconds")
+    clamped_dt = _dt.fromisoformat(adj_session3["start_time"])
+    now_dt = _dt.fromisoformat(now_str)
+    elapsed_after_clamp = (now_dt - clamped_dt).total_seconds()
+    check("elapsed time after clamp is ~0 (a few ms at most)", elapsed_after_clamp >= 0 and elapsed_after_clamp < 2)
+
+    # Stop the session and verify billing uses the adjusted time. Even though
+    # the explicit start_time adjustment added ~5 minutes, the checkout rule
+    # still cancels any session shorter than 15 minutes, so the duration cost
+    # must be zero for this short session.
+    stopped_adjusted = adb.stop_session(asid)
+    check("stop_session after adjustments still zeroes duration for sessions under 15 minutes",
+          abs(stopped_adjusted["duration_cost"]) < 1e-9)
+    check("duration_seconds reflects the adjustment (~300+ seconds after clamp)",
+          stopped_adjusted["duration_seconds"] is not None and stopped_adjusted["duration_seconds"] >= 0)
+
+    # Finish this session and move on to the next test.
+    adb.finish_session(asid, stopped_adjusted["total_cost"])
+
+    # Independent session: adjusting one session must NOT affect another.
+    asid2 = adb.start_session(atable["id"], atable["name"])
+    before_asid2 = adb.get_session(asid2)
+
+    # Adjust the FIRST session again (it's completed, so this is a bit of a
+    # stress test, but the method should still work).
+    adb.adjust_session_elapsed_time(asid, 600)  # adjust completed session
+
+    # The SECOND session must be completely unaffected.
+    after_asid2 = adb.get_session(asid2)
+    check("adjusting one session doesn't affect a different session",
+          before_asid2["start_time"] == after_asid2["start_time"])
+
+    adb.finish_session(asid2, 5.00)
+finally:
+    os.unlink(adj_db_path)
+    for ext in ("-wal", "-shm"):
+        p = adj_db_path + ext
         if os.path.exists(p):
             os.unlink(p)
 

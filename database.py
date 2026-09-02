@@ -28,7 +28,7 @@ import math
 import jdatetime
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from contextlib import contextmanager
 
 APP_DIR = Path.home() / "BuildTime"
@@ -148,6 +148,59 @@ def compute_duration_cost(duration_seconds, hourly_rate):
     return float(cost)
 
 
+def compute_checkout_duration_cost(duration_seconds, hourly_rate):
+    """Checkout-only billing rule: sessions under 15 minutes are free.
+    The live running timer may still estimate a cost while the session is in
+    progress, but once the customer is checking out, the table-time charge
+    is zero for any total duration under 15 minutes."""
+    if duration_seconds is None or duration_seconds < 15 * 60:
+        return 0.0
+    return compute_duration_cost(duration_seconds, hourly_rate)
+
+
+# ------------------------------------------------------------------
+# Per-stopwatch percentage discount
+# ------------------------------------------------------------------
+# Applies ONLY to a table's duration/hourly charge -- never to item
+# (snack/drink) prices, and never to a walk-in sale, which has no
+# duration charge to discount in the first place. 0-100, default 0.
+DISCOUNT_MIN_PERCENT = 0
+DISCOUNT_MAX_PERCENT = 100
+
+
+def validate_discount_percent(value):
+    """Parse and range-check a discount percentage. Returns a float in
+    [0, 100] on success; raises ValueError with a message fit to show the
+    user directly otherwise. Decimal percentages (e.g. 12.5) are allowed,
+    not just whole numbers."""
+    try:
+        pct = float(value)
+    except (TypeError, ValueError):
+        raise ValueError("Discount must be a number.")
+    if not (DISCOUNT_MIN_PERCENT <= pct <= DISCOUNT_MAX_PERCENT):
+        raise ValueError(
+            f"Discount must be between {DISCOUNT_MIN_PERCENT}% and {DISCOUNT_MAX_PERCENT}%."
+        )
+    return pct
+
+
+def apply_discount(duration_cost, discount_percent):
+    """(raw pre-discount duration_cost, 0-100 discount_percent) -> a
+    (discounted_duration_cost, discount_amount) tuple, each a float
+    rounded to the nearest cent. Computed via Decimal throughout so a
+    discount percentage that doesn't divide evenly (e.g. 33%) can't
+    introduce the same class of binary floating-point drift the tiered
+    billing rule's 1/6 fraction would otherwise cause. items_cost is
+    never touched here or anywhere in the discount code path -- the
+    discount is mixed into total_cost only via this duration-side amount.
+    """
+    dc = Decimal(str(duration_cost or 0))
+    pct = Decimal(str(discount_percent or 0))
+    discount_amount = (dc * pct / Decimal(100)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    discounted = (dc - discount_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return float(discounted), float(discount_amount)
+
+
 class Database:
     def __init__(self, db_path=None):
         self.db_path = Path(db_path) if db_path else DB_PATH
@@ -207,6 +260,7 @@ class Database:
                     hourly_rate_snapshot REAL NOT NULL,
                     items_cost REAL NOT NULL DEFAULT 0,
                     duration_cost REAL,
+                    discount_percent REAL NOT NULL DEFAULT 0,
                     total_cost REAL,
                     received_amount REAL,
                     comment TEXT DEFAULT '',
@@ -261,6 +315,17 @@ class Database:
                     (gregorian_to_shamsi(row["date"]), row["id"]),
                 )
 
+            # Same pattern for discount_percent (per-stopwatch percentage
+            # discount, applies only to duration_cost -- never to item
+            # prices). SQLite fills existing rows with the DEFAULT 0 for a
+            # simple ALTER TABLE ADD COLUMN, unlike shamsi_date above,
+            # since 0 (no discount) is a correct value for every
+            # pre-existing session -- no per-row backfill computation needed.
+            try:
+                conn.execute("ALTER TABLE sessions ADD COLUMN discount_percent REAL NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
+
             # DROP + CREATE (not "IF NOT EXISTS") so a view definition changed in
             # a later version of this file — like adding s.comment here — always
             # takes effect, even for a database that already had an older view.
@@ -271,7 +336,7 @@ class Database:
                 SELECT
                     s.id, s.date, s.shamsi_date, s.table_name_snapshot AS table_name,
                     s.start_time, s.end_time, s.duration_seconds,
-                    s.items_cost, s.duration_cost, s.total_cost,
+                    s.items_cost, s.duration_cost, s.discount_percent, s.total_cost,
                     s.received_amount, s.comment, s.status, s.synced,
                     (SELECT GROUP_CONCAT(item_name_snapshot || ' x' || quantity, ', ')
                      FROM session_items si
@@ -476,8 +541,15 @@ class Database:
             start = datetime.fromisoformat(row["start_time"])
             end = datetime.now()
             duration = (end - start).total_seconds()
-            duration_cost = compute_duration_cost(duration, row["hourly_rate_snapshot"])
-            total = row["items_cost"] + duration_cost
+            duration_cost = compute_checkout_duration_cost(duration, row["hourly_rate_snapshot"])
+            # duration_cost itself always stays the raw, pre-discount charge
+            # (matching what compute_duration_cost has always meant); any
+            # discount set on a previous stop/resume cycle for this same
+            # session (discount_percent is never touched by resume_session)
+            # is re-applied here so total_cost is correct immediately,
+            # without the user needing to re-enter it after every re-stop.
+            discounted_duration_cost, _ = apply_discount(duration_cost, row["discount_percent"] or 0)
+            total = row["items_cost"] + discounted_duration_cost
             conn.execute(
                 """UPDATE sessions SET end_time=?, duration_seconds=?, duration_cost=?,
                    total_cost=?, status='awaiting_checkout', updated_at=? WHERE id=?""",
@@ -485,14 +557,60 @@ class Database:
             )
         return self.get_session(session_id)
 
+    def set_session_discount(self, session_id, discount_percent):
+        """Set (or change) a table session's percentage discount, at
+        checkout time -- applies ONLY to the already-computed duration_cost,
+        never to items_cost. Raises ValueError (with a message fit to show
+        the user directly) for anything outside 0-100, rather than
+        silently clamping or accepting garbage. Recomputes total_cost
+        immediately from the session's existing duration_cost + items_cost
+        so the checkout screen can reflect it right away."""
+        discount_percent = validate_discount_percent(discount_percent)
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
+            if not row:
+                return None
+            discounted_duration_cost, _ = apply_discount(row["duration_cost"] or 0, discount_percent)
+            total = (row["items_cost"] or 0) + discounted_duration_cost
+            conn.execute(
+                "UPDATE sessions SET discount_percent=?, total_cost=?, updated_at=? WHERE id=?",
+                (discount_percent, total, _now_iso(), session_id),
+            )
+        return self.get_session(session_id)
+
     def resume_session(self, session_id):
-        """Undo an accidental Stop — puts the session back into 'running'."""
+        """Undo an accidental Stop — puts the session back into 'running'.
+        Deliberately does NOT touch discount_percent: a discount already
+        agreed for this customer's visit should survive a brief resume,
+        not need to be re-entered the next time the table is stopped."""
         with self._connect() as conn:
             conn.execute(
                 """UPDATE sessions SET end_time=NULL, duration_seconds=NULL, duration_cost=NULL,
                    total_cost=NULL, status='running', updated_at=? WHERE id=?""",
                 (_now_iso(), session_id),
             )
+
+    def adjust_session_elapsed_time(self, session_id, delta_seconds):
+        """Adjust a running session's elapsed time by adding or subtracting seconds.
+        Positive delta adds time, negative delta subtracts time. Clamps to zero if
+        the result would be negative (can't have a future start time)."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
+            if not row:
+                return None
+            start = datetime.fromisoformat(row["start_time"])
+            # To add time: move start_time backwards (in the past).
+            # To subtract time: move start_time forwards (in the future).
+            new_start = start - timedelta(seconds=delta_seconds)
+            # Clamp: ensure start_time is not in the future (elapsed time can't be negative)
+            now = datetime.now()
+            if new_start > now:
+                new_start = now
+            conn.execute(
+                "UPDATE sessions SET start_time=?, updated_at=? WHERE id=?",
+                (new_start.isoformat(timespec="seconds"), _now_iso(), session_id),
+            )
+        return self.get_session(session_id)
 
     # ------------------------------------------------------------------
     # Walk-in sales -- snack/drink sales not tied to any table, so there's
@@ -556,6 +674,15 @@ class Database:
 
     def finish_session(self, session_id, received_amount, comment=None):
         with self._connect() as conn:
+            row = conn.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
+            if not row:
+                return
+
+            if (row["items_cost"] or 0) == 0 and (row["total_cost"] or 0) == 0:
+                conn.execute("DELETE FROM session_items WHERE session_id=?", (session_id,))
+                conn.execute("DELETE FROM sessions WHERE id=?", (session_id,))
+                return
+
             conn.execute(
                 "UPDATE sessions SET received_amount=?, comment=?, status='completed', updated_at=? WHERE id=?",
                 (received_amount, comment or "", _now_iso(), session_id),

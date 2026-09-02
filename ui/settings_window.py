@@ -6,6 +6,7 @@ Settings dropdown menu, exactly as requested:
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 
+from ui.modal_toplevel import ModalToplevel
 
 LOCK_MESSAGE = (
     "Settings cannot be changed while a stopwatch is running. "
@@ -13,14 +14,18 @@ LOCK_MESSAGE = (
 )
 
 
-class SettingsWindow(tk.Toplevel):
+class SettingsWindow(ModalToplevel):
     def __init__(self, app, initial_tab=0):
-        super().__init__(app.root)
+        # use_transient=False: Settings is a substantial, multi-tab window
+        # someone may reasonably want to resize or maximize to see more of
+        # a long item/table list -- it stays just as modal either way, it
+        # just also keeps its own Minimize/Maximize buttons rather than
+        # losing them the way a small single-purpose dialog would.
+        super().__init__(app.root, use_transient=False)
         self.app = app
         self.db = app.db
         self.title("Settings")
         self.geometry("560x520")
-        self.transient(app.root)
 
         # Every button/entry/checkbox/treeview that can change a setting is
         # appended here as it's built, so refresh_lock_state() can flip them
@@ -418,15 +423,13 @@ class SettingsWindow(tk.Toplevel):
         (messagebox.showinfo if ok else messagebox.showerror)("Connection Test", msg, parent=self)
 
 
-class ItemDialog(tk.Toplevel):
+class ItemDialog(ModalToplevel):
     """Modal add/edit dialog for a single snack/drink item."""
 
     def __init__(self, parent, title, item=None):
         super().__init__(parent)
         self.title(title)
         self.result = None
-        self.transient(parent)
-        self.grab_set()
 
         pad = dict(padx=8, pady=6)
         row = ttk.Frame(self); row.pack(fill="x", **pad)

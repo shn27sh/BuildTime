@@ -7,23 +7,22 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from datetime import date, timedelta
 
+from database import apply_discount
+from ui.modal_toplevel import ModalToplevel
 
-class HistoryWindow(tk.Toplevel):
+
+class HistoryWindow(ModalToplevel):
     def __init__(self, app):
-        super().__init__(app.root)
+        # use_transient=False -- same reasoning as SettingsWindow: this is
+        # a big, many-column record browser someone will often want to
+        # resize or maximize, so it keeps full window controls while
+        # staying just as modal (see ModalToplevel for why those two
+        # things are independent).
+        super().__init__(app.root, use_transient=False)
         self.app = app
         self.db = app.db
         self.title("History & Records")
-        self.geometry("1040x520")
-        # Deliberately NOT self.transient(app.root) here: a transient
-        # window is treated by the window manager (and by Windows' own
-        # title-bar handling) as a dialog subordinate to its parent, which
-        # conventionally strips the Minimize/Maximize buttons and leaves
-        # only Close. This window is meant to be freely resized/maximized/
-        # minimized on its own, so it stays a full, independent top-level
-        # window instead -- that's what restores the normal three-button
-        # title bar. It doesn't grab_set() either, so the main window
-        # stays fully usable alongside it either way.
+        self.geometry("1360x520")
         self.resizable(True, True)
 
         top = ttk.Frame(self, padding=8)
@@ -78,32 +77,46 @@ class HistoryWindow(tk.Toplevel):
             side="left", padx=(6, 0)
         )
         ttk.Label(
-            search_row, text="matches date (Gregorian or Shamsi), table, snacks, drinks, cost, received, comment",
+            search_row, text="matches date (Gregorian or Shamsi), table, snacks, drinks, discount, cost, received, comment",
             foreground="gray",
         ).pack(side="left", padx=(10, 0))
 
-        # Records list, with a vertical scrollbar wired to it -- a bare
-        # Treeview can silently clip rows below the visible area with no
-        # visual indicator and no way to drag to a position, so both the
-        # scrollbar and the Treeview share the same yview/yscrollcommand
-        # link (the standard Tk pairing for this).
+        # Records list, with both scrollbars wired to it. A vertical one
+        # alone isn't enough here: with 13 columns (Date x2, Table, Start,
+        # End, Duration, Snacks, Drinks, Discount, Cost, Received, Comment,
+        # Synced) the row content is comfortably wider than the window at
+        # any reasonable size, so without a horizontal scrollbar the later
+        # columns would just be silently clipped off-screen with no way to
+        # reach them. Both scrollbars use the same yview/xview +
+        # y|xscrollcommand pairing -- the standard Tk pattern for this.
         tree_frame = ttk.Frame(self)
         tree_frame.pack(fill="both", expand=True, padx=8, pady=(0, 4))
         tree_frame.rowconfigure(0, weight=1)
         tree_frame.columnconfigure(0, weight=1)
 
-        cols = ("date", "shamsi", "table", "start", "end", "duration", "snacks", "drinks", "cost", "received", "comment", "synced")
-        headers = ["Date (Gregorian)", "Date (Shamsi)", "Table", "Start", "End", "Duration", "Snacks", "Drinks", "Cost", "Received", "Comment", "Synced"]
+        cols = ("date", "shamsi", "table", "start", "end", "duration", "snacks", "drinks", "discount", "cost", "received", "comment", "synced")
+        headers = ["Date (Gregorian)", "Date (Shamsi)", "Table", "Start", "End", "Duration", "Snacks", "Drinks", "Discount", "Cost", "Received", "Comment", "Synced"]
         self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings")
-        for c, h in zip(cols, headers):
+        for i, (c, h) in enumerate(zip(cols, headers)):
             self.tree.heading(c, text=h)
             width = 140 if c in ("snacks", "drinks", "comment") else (105 if c in ("date", "shamsi") else 85)
-            self.tree.column(c, width=width, anchor="w")
+            # stretch=False on every column except the last: with 13
+            # columns, ttk's default stretch=True would otherwise
+            # auto-shrink ALL of them to force everything to fit any
+            # window width, down to an unreadable few pixels each, rather
+            # than keeping them at a readable size and letting the
+            # horizontal scrollbar (below) reveal the rest -- the same
+            # tradeoff a spreadsheet makes. The last column still
+            # stretches, so a comfortably wide window doesn't leave an
+            # empty gap on the right.
+            self.tree.column(c, width=width, anchor="w", stretch=(i == len(cols) - 1))
 
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=vsb.set)
+        hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         self.tree.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
         self.tree.bind("<Double-1>", self._on_row_double_click)
 
         # Mouse wheel scrolling over a Treeview is usually already bound
@@ -178,11 +191,18 @@ class HistoryWindow(tk.Toplevel):
         Treeview and, joined together, as the text the search box matches
         against, so search always finds whatever's visibly on screen."""
         cur = self.db.get_currency_symbol()
+        discount_pct = r["discount_percent"] or 0
+        if discount_pct > 0:
+            _discounted, discount_amt = apply_discount(r["duration_cost"] or 0, discount_pct)
+            discount_display = f"{discount_pct:g}% (-{cur}{discount_amt:.2f})"
+        else:
+            discount_display = "-"
         return (
             r["date"], r["shamsi_date"] or "-", r["table_name"],
             self._fmt_time(r["start_time"]), self._fmt_time(r["end_time"]),
             self._fmt_duration(r["duration_seconds"]),
             r["snacks_text"] or "-", r["drinks_text"] or "-",
+            discount_display,
             f"{cur}{r['total_cost']:.2f}" if r["total_cost"] is not None else "-",
             f"{cur}{r['received_amount']:.2f}" if r["received_amount"] is not None else "-",
             r["comment"] or "-",
@@ -267,35 +287,37 @@ class HistoryWindow(tk.Toplevel):
         with open(path, "w", newline="", encoding="utf-8-sig") as fp:
             w = csv.writer(fp)
             w.writerow(
-                ["Date (Gregorian)", "Date (Shamsi)", "Table", "Start", "End", "Duration (s)", "Snacks", "Drinks",
-                 "Items Cost", "Duration Cost", "Total Cost", "Received", "Comment", "Synced"]
+                ["Date (Gregorian)", "Date (Shamsi)", "Table", "Start", "End", "Duration", "Snacks", "Drinks",
+                 "Items Cost", "Duration Cost", "Discount %", "Discount Amount", "Total Cost", "Received",
+                 "Comment", "Synced"]
             )
             for r in self._visible_rows:
+                discount_pct = r["discount_percent"] or 0
+                _discounted, discount_amt = apply_discount(r["duration_cost"] or 0, discount_pct)
+                duration_display = self._fmt_duration(r["duration_seconds"])
                 w.writerow(
                     [r["date"], r["shamsi_date"] or "", r["table_name"], r["start_time"], r["end_time"],
-                     r["duration_seconds"], r["snacks_text"] or "", r["drinks_text"] or "", r["items_cost"],
-                     r["duration_cost"], r["total_cost"], r["received_amount"], r["comment"] or "",
-                     "Yes" if r["synced"] else "No"]
+                     duration_display, r["snacks_text"] or "", r["drinks_text"] or "", r["items_cost"],
+                     r["duration_cost"], discount_pct, discount_amt, r["total_cost"], r["received_amount"],
+                     r["comment"] or "", "Yes" if r["synced"] else "No"]
                 )
         messagebox.showinfo("Exported", f"History exported to:\n{path}", parent=self)
 
 
-class EditReceivedDialog(tk.Toplevel):
+class EditReceivedDialog(ModalToplevel):
     def __init__(self, parent, app, row):
         super().__init__(parent)
         self.app = app
         self.row = row
         self.title(f"{row['table_name']} \u2014 {row['date']}")
-        self.transient(parent)
-        self.grab_set()
         cur = app.db.get_currency_symbol()
 
         pad = dict(padx=10, pady=4)
-        ttk.Label(self, text=f"Duration: {(row['duration_seconds'] or 0) // 60} min", **pad).pack(anchor="w")
-        ttk.Label(self, text=f"Snacks: {row['snacks_text'] or '-'}", **pad).pack(anchor="w")
-        ttk.Label(self, text=f"Drinks: {row['drinks_text'] or '-'}", **pad).pack(anchor="w")
+        ttk.Label(self, text=f"Duration: {(row['duration_seconds'] or 0) // 60} min").pack(anchor="w", **pad)
+        ttk.Label(self, text=f"Snacks: {row['snacks_text'] or '-'}").pack(anchor="w", **pad)
+        ttk.Label(self, text=f"Drinks: {row['drinks_text'] or '-'}").pack(anchor="w", **pad)
         total_display = f"{cur}{row['total_cost']:.2f}" if row["total_cost"] is not None else "-"
-        ttk.Label(self, text=f"Total cost: {total_display}", **pad).pack(anchor="w")
+        ttk.Label(self, text=f"Total cost: {total_display}").pack(anchor="w", **pad)
 
         row2 = ttk.Frame(self); row2.pack(fill="x", **pad)
         ttk.Label(row2, text="Received amount:").pack(side="left")
@@ -303,7 +325,7 @@ class EditReceivedDialog(tk.Toplevel):
         self.received_var = tk.StringVar(value=initial)
         ttk.Entry(row2, textvariable=self.received_var, width=10).pack(side="left", padx=4)
 
-        ttk.Label(self, text="Comment:", **pad).pack(anchor="w")
+        ttk.Label(self, text="Comment:").pack(anchor="w", **pad)
         self.comment_var = tk.StringVar(value=row.get("comment") or "")
         ttk.Entry(self, textvariable=self.comment_var).pack(fill="x", padx=10)
 

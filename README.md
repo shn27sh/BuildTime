@@ -38,12 +38,32 @@ cloud sync that never blocks the app and never uploads a duplicate.
   Python's `Decimal` rather than plain floats specifically so a
   repeating fraction like 1/6 can't introduce rounding error into the
   charged amount.
-- **Optional comment at checkout** — after you press Stop, an optional
-  "Comment" box sits between the Received amount and the Finish/Resume
-  buttons for a quick note (e.g. "paid cash", "asked for a receipt").
-  It's saved to the local database the moment you press Finish and syncs
-  to Supabase along with everything else — leave it blank if there's
-  nothing to note.
+- **Per-stopwatch percentage discount** — once you press Stop, a
+  "Discount %:" field appears on that table's checkout panel (0-100,
+  defaults to 0/no discount, decimals like 12.5 allowed). It applies ONLY
+  to that table's duration charge — never to item prices, and it's
+  entirely independent per table: setting one table's discount never
+  touches any other, including other tables checked out at the same
+  time. Applying it re-shows the breakdown with a "Discount: -$X.XX (N%)"
+  line and updates the Received field to match, without disturbing a
+  Comment you've already started typing. A discount survives Resume (if
+  you briefly resume a table's timer, the discount you'd already agreed
+  to for that customer doesn't need re-entering) and shows up in History
+  and CSV export (`Discount %` / `Discount Amount` columns) once the sale
+  is finished. Like the billing rule above, the discount math runs
+  through `Decimal` (`apply_discount` in `database.py`) so a percentage
+  like 33% can't leave a fraction of a cent unaccounted for.
+- **Optional comment, available the whole session through** — a "Comment"
+  box sits right below the Stop button while a table is running, not just
+  at checkout, for a quick note whenever it's useful (e.g. "regular
+  customer", "pays by card") rather than only right at the end. It's the
+  same box at checkout too (between Received and Finish/Resume) — one
+  shared field, so whatever's typed during the session is already there
+  to review or edit before Finish. Every keystroke saves immediately, the
+  same as an item tap, so a note jotted down early in a long session
+  isn't at risk if the app closes before that table is ever stopped. It
+  resets to blank for each new customer and syncs to Supabase once the
+  session is finished — leave it blank if there's nothing to note.
 - **Crash-safe by design** — a session is written to the database the
   moment you press Start, and every item tap writes immediately too. If
   the app or the computer crashes mid-session, reopening the app finds it
@@ -72,6 +92,24 @@ cloud sync that never blocks the app and never uploads a duplicate.
   wheel or the scrollbar), and export to CSV — UTF-8 with a BOM so
   non-Latin text like Persian or Arabic opens correctly in Excel, and
   respecting whatever the search box currently has filtered.
+- **True modal popups** — Settings, History, and their own sub-dialogs
+  (Add/Edit Item, Edit Received) block the main window while open, the
+  same way a native Windows modal dialog does: clicking through to a
+  blocked window plays the system beep and brings the open dialog back
+  to the front instead. This also means only one of these can ever be
+  open at a time — opening Settings while History is already open just
+  beeps and refocuses History rather than stacking a second window on
+  top, and even closing the whole app is blocked the same way while a
+  modal is up (matching Alt+F4 against a window with an open modal
+  child). Nested dialogs (e.g. Add Item, opened from within Settings)
+  correctly hand control back to whichever window opened them once
+  closed. Settings and History keep their full Minimize/Maximize/Close
+  title bar throughout — modality here comes entirely from `grab_set()`
+  and a `<FocusIn>` watch on the parent, not from `transient()`, so it
+  doesn't cost the window any of its normal controls (only the small
+  single-purpose sub-dialogs, where a Minimize/Maximize button wouldn't
+  mean much anyway, use `transient()` too). See `ui/modal_toplevel.py`
+  for the shared implementation.
 
 ## 1. Install
 
@@ -209,6 +247,37 @@ new numbers.
   an accepted characteristic shared across nearly all software Jalali
   converters, verified here against 7 independent reference dates and a
   247-point round-trip sweep across 2005-2030.
+- **Discount is a checkout-time field on the session, not a Settings-wide
+  default.** There's no "default discount %" you configure once — every
+  session starts at 0% and a discount is a deliberate action taken at
+  checkout for that specific customer, matching the request that it be
+  independently set per stopwatch. Walk-in sales have no discount control
+  at all (not even a hidden 0%), since they have no duration charge for a
+  duration-only discount to apply to.
+- **Modality doesn't require giving up Minimize/Maximize after all.**
+  A first pass at true modal windows used `transient()` for the whole
+  effect, which — on top of the blocking itself — also strips a window's
+  Minimize/Maximize buttons (the Windows convention for a dialog owned by
+  another window). Settings and History briefly lost those buttons as a
+  result. But `transient()` and `grab_set()` turned out to be independent
+  of each other: `grab_set()` alone already provides full blocking, the
+  beep-and-refocus behavior, and everything else modality needs, with or
+  without `transient()`. So Settings and History now skip `transient()`
+  and keep their normal window controls, while the small single-purpose
+  sub-dialogs (Add/Edit Item, Edit Received) still use it, since a
+  Minimize/Maximize button wouldn't add anything useful to a form that's
+  just a couple of fields and a Save button.
+- **History's columns hold a fixed, readable width instead of always
+  auto-fitting the window.** With 13 columns, ttk's default behavior
+  (every column set to shrink-to-fit) was cramming all of them into
+  unreadable slivers rather than ever truly needing the horizontal
+  scrollbar that sits below the list — so the fitting was silently
+  hiding content instead of making it reachable. Every column but the
+  last now holds its set width regardless of window size, and the
+  horizontal scrollbar handles the rest, the same trade-off a
+  spreadsheet makes. The default window width (1360px) still comfortably
+  fits every column without needing to scroll at all; the scrollbar only
+  matters once the window's been resized narrower than that.
 
 ## Project layout
 
@@ -223,10 +292,12 @@ buildtime/
 │   │                          # plus the inline item rows while running
 │   ├── walkin_card.py        # pinned Walk-in Sale card: same item rows and
 │   │                          # checkout as a table, no name, no stopwatch
+│   ├── modal_toplevel.py     # shared base class making Settings/History/their
+│   │                          # sub-dialogs true modals (see Features below)
 │   ├── settings_window.py    # Tables / Snacks & Drinks / Pricing / Cloud Sync tabs
 │   │                          # (locked/read-only while any stopwatch is running)
 │   └── history_window.py     # records browser, CSV export, edit Received
-├── test_database.py          # automated checks for the data layer (59 checks)
+├── test_database.py          # automated checks for the data layer (137 checks)
 ├── test_sync_manager.py      # automated checks for the sync layer (16 checks)
 ├── requirements.txt
 ├── supabase_schema.sql

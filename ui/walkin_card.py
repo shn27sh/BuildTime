@@ -24,13 +24,29 @@ from database import WALKIN_TABLE_NAME
 
 class WalkInCard(ttk.LabelFrame):
     def __init__(self, parent, app):
-        super().__init__(parent, text=WALKIN_TABLE_NAME, padding=10)
+        super().__init__(parent, padding=10)
         self.app = app
         self.db = app.db
         self.session_id = None
         self.status = "open"  # open | checkout
         self.qty_vars = {}     # item_id -> StringVar for "xN", rebuilt per catalog refresh
         self.item_by_id = {}   # item_id -> item dict, rebuilt per catalog refresh
+        self._folded = False
+
+        header = ttk.Frame(self)
+        header.pack(fill="x", pady=(0, 4))
+        ttk.Label(header, text=WALKIN_TABLE_NAME, font=("", 11, "bold")).pack(side="left")
+        self.fold_btn = ttk.Button(header, text="Fold", width=8, command=self._toggle_fold)
+        self.fold_btn.pack(side="right")
+
+        self.status_label = ttk.Label(self, text="Open", foreground="#1a7f37")
+        self.status_label.pack()
+
+        self.comment_var = tk.StringVar()
+        self.compact_comment_frame = ttk.Frame(self)
+        ttk.Label(self.compact_comment_frame, text="Comment (optional):").pack(anchor="w")
+        ttk.Entry(self.compact_comment_frame, textvariable=self.comment_var).pack(fill="x")
+        self.compact_comment_frame.pack(fill="x", pady=(8, 0))
 
         ttk.Label(
             self, text="Snacks & drinks not tied to a table", foreground="gray",
@@ -52,7 +68,6 @@ class WalkInCard(ttk.LabelFrame):
         comment_row = ttk.Frame(self.checkout_frame)
         comment_row.pack(fill="x", pady=(0, 4))
         ttk.Label(comment_row, text="Comment (optional):").pack(anchor="w")
-        self.comment_var = tk.StringVar()
         self.comment_entry = ttk.Entry(comment_row, textvariable=self.comment_var)
         self.comment_entry.pack(fill="x")
 
@@ -80,17 +95,32 @@ class WalkInCard(ttk.LabelFrame):
 
         self._render_open()
 
+    def _toggle_fold(self):
+        if self.status == "checkout":
+            return
+        self._folded = not self._folded
+        self.fold_btn.config(text="Unfold" if self._folded else "Fold")
+        if self._folded:
+            self.items_section.pack_forget()
+        else:
+            self.items_section.pack(fill="x")
+
     # ------------------------------------------------------------------
     # State renders
     # ------------------------------------------------------------------
     def _render_open(self):
         self.status = "open"
+        self.status_label.config(text="Open", foreground="#1a7f37")
         self.checkout_frame.pack_forget()
         self._build_items_section()
-        self.items_section.pack(fill="x")
+        if not self._folded:
+            self.items_section.pack(fill="x")
 
     def _render_checkout(self, session):
         self.status = "checkout"
+        self._folded = False
+        self.fold_btn.config(text="Fold")
+        self.status_label.config(text="Awaiting Checkout", foreground="#b35900")
         self.items_section.pack_forget()
         cur = self.db.get_currency_symbol()
         self.cost_label.config(text=f"Items:    {cur}{session['items_cost']:.2f}\nTotal:    {cur}{session['total_cost']:.2f}")
