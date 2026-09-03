@@ -307,7 +307,7 @@ class SettingsWindow(ModalToplevel):
             text=(
                 "Billing: the first hour is always billed as a full hour, "
                 "even if the stopwatch only ran a few seconds. Past the "
-                "first hour, every started 10-minute block adds another "
+                "first hour, every completed 10-minute block adds another "
                 "1/6 of the hourly rate."
             ),
             foreground="gray", wraplength=500, justify="left",

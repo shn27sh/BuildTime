@@ -45,9 +45,10 @@ cloud sync that never blocks the app and never uploads a duplicate.
   **Settings ▸ Pricing**. Sessions shorter than 15 minutes have no duration
   charge, while their snack and drink items are still billed normally. At 15
   minutes or longer, the first hour is billed as a flat 1-hour minimum. Past
-  that first hour, billing switches to 10-minute blocks: every *started*
-  10-minute increment adds another 1/6 of the hourly rate (so 1h11m
-  bills as 1 hour + 2/6, 1h21m as 1 hour + 3/6, and so on). The live
+  that first hour, billing switches to completed 10-minute blocks: extra
+  minutes are rounded down, and each completed block adds 1/6 of the hourly
+  rate (so 1h1s and 1h9m bill as 1 hour, while 1h11m bills as 1 hour + 1/6).
+  The live
   "Running · est. $X.XX" estimate and the final charge after Stop always
   agree, since both go through the same calculation
   (`compute_duration_cost` in `database.py`). The money math runs through
@@ -243,7 +244,7 @@ new numbers.
   need, e.g., a pricier VIP table).
 - Duration billing follows a **fixed tiered rule** (see the Features list
   above), not a user-configurable rounding setting — the increment sizes
-  (1 hour minimum, then 10-minute blocks) are specific enough that they
+  (1 hour minimum, then completed 10-minute blocks rounded down) are specific enough that they
   replaced the old general-purpose "round up to nearest N minutes" option
   rather than sitting alongside it.
 - Cloud sync is **manual by default** ("Sync Now" button) since you

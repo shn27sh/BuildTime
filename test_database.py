@@ -128,58 +128,46 @@ try:
 
     # --- tiered stopwatch billing rule (compute_billable_hours / compute_duration_cost) ---
     # Pure-function checks against every worked example from the spec:
-    #   <= 1 hour bills as a flat 1-hour minimum; past 1 hour, every
-    #   *started* 10-minute block adds another 1/6 of the hourly rate.
-    # NOTE on "1 hour 34 minutes": the spec listed this as "1 hour + 3/6",
-    # but applying the spec's own formula literally --
-    #   extraTime=34min=2040s, extraBlocks=ceil(2040/600)=4 -> 1 + 4/6 --
-    # gives 4/6, not 3/6. It also has to be 4/6 to stay consistent with
-    # the neighboring examples: 1h30m is explicitly 3/6 and 1h40m is
-    # explicitly 4/6, and 1h34m falls strictly between those two
-    # boundaries, so it must land in the same block as 1h40m. Treating
-    # "1h34m -> 3/6" as a one-off typo and following the stated formula
-    # (which 16 of the 17 worked examples already agree with).
+      #   <= 1 hour bills as a flat 1-hour minimum; past 1 hour, only each
+      #   *completed* 10-minute block adds another 1/6 of the hourly rate.
     billable_cases = [
         (1, Decimal(1), "1 second"),
         (10 * 60, Decimal(1), "10 minutes"),
         (47 * 60, Decimal(1), "47 minutes"),
         (59 * 60 + 59, Decimal(1), "59 minutes 59 seconds"),
         (3600, Decimal(1), "1 hour exactly"),
-        (3600 + 1, Decimal(1) + Decimal(1) / 6, "1 hour 1 second"),
+      (3600 + 1, Decimal(1), "1 hour 1 second"),
         (3600 + 10 * 60, Decimal(1) + Decimal(1) / 6, "1 hour 10 minutes"),
-        (3600 + 11 * 60, Decimal(1) + Decimal(2) / 6, "1 hour 11 minutes"),
+      (3600 + 11 * 60, Decimal(1) + Decimal(1) / 6, "1 hour 11 minutes"),
         (3600 + 20 * 60, Decimal(1) + Decimal(2) / 6, "1 hour 20 minutes"),
-        (3600 + 21 * 60, Decimal(1) + Decimal(3) / 6, "1 hour 21 minutes"),
+      (3600 + 21 * 60, Decimal(1) + Decimal(2) / 6, "1 hour 21 minutes"),
         (3600 + 30 * 60, Decimal(1) + Decimal(3) / 6, "1 hour 30 minutes"),
-        (3600 + 34 * 60, Decimal(1) + Decimal(4) / 6, "1 hour 34 minutes (see NOTE above)"),
+      (3600 + 34 * 60, Decimal(1) + Decimal(3) / 6, "1 hour 34 minutes"),
         (3600 + 40 * 60, Decimal(1) + Decimal(4) / 6, "1 hour 40 minutes"),
         (3600 + 50 * 60, Decimal(1) + Decimal(5) / 6, "1 hour 50 minutes"),
-        (3600 + 59 * 60, Decimal(2), "1 hour 59 minutes (6/6 = 2 hours)"),
+      (3600 + 59 * 60, Decimal(1) + Decimal(5) / 6, "1 hour 59 minutes"),
         (2 * 3600, Decimal(2), "2 hours exactly"),
-        (2 * 3600 + 1, Decimal(2) + Decimal(1) / 6, "2 hours 1 second"),
+      (2 * 3600 + 1, Decimal(2), "2 hours 1 second"),
     ]
     for secs, expected_hours, label in billable_cases:
         got = compute_billable_hours(secs)
         check(f"billable hours for {label}: expected {expected_hours}", got == expected_hours)
 
-    # A fraction of a second past a boundary still counts as having
-    # *started* the next block (ceiling behavior applies to fractional
-    # seconds too, not just whole-minute inputs).
-    check("0.5s past the 1-hour mark still starts the next block",
-          compute_billable_hours(3600.5) == Decimal(1) + Decimal(1) / 6)
-    check("0.5s past a 10-minute mark still starts the next block",
-          compute_billable_hours(3600 + 600.5) == Decimal(1) + Decimal(2) / 6)
+    check("0.5s past the 1-hour mark stays in the first hour block",
+          compute_billable_hours(3600.5) == Decimal(1))
+    check("0.5s past a 10-minute mark stays in the current block",
+          compute_billable_hours(3600 + 600.5) == Decimal(1) + Decimal(1) / 6)
 
     # Money side: billable hours (a clean fraction) x an hourly rate that
     # doesn't divide evenly by 6, rounded to the nearest cent. Computed via
     # Decimal internally so the well-known float error in repeating
     # fractions like 1/6 (0.1666...) can't leak into the charged amount.
-    check("$10.00/hr, 1h11m -> $13.33 (10 + 2*10/6 = 13.333... rounds to 13.33)",
-          compute_duration_cost(3600 + 11 * 60, 10.00) == 13.33)
-    check("$10.00/hr, 1h21m -> $15.00 (10 + 3*10/6 = 15.00 exactly)",
-          compute_duration_cost(3600 + 21 * 60, 10.00) == 15.00)
-    check("$5.00/hr, 1h1s -> $5.83 (5 + 5/6 = 5.8333... rounds to 5.83)",
-          compute_duration_cost(3600 + 1, 5.00) == 5.83)
+    check("$10.00/hr, 1h11m -> $11.67 (10 + 1*10/6 = 11.666... rounds to 11.67)",
+          compute_duration_cost(3600 + 11 * 60, 10.00) == 11.67)
+    check("$10.00/hr, 1h21m -> $13.33 (10 + 2*10/6 = 13.333... rounds to 13.33)",
+          compute_duration_cost(3600 + 21 * 60, 10.00) == 13.33)
+    check("$5.00/hr, 1h1s -> $5.00 (remaining seconds are rounded down)",
+          compute_duration_cost(3600 + 1, 5.00) == 5.00)
     check("$0/hr never crashes and bills $0 regardless of duration",
           compute_duration_cost(3600 + 21 * 60, 0) == 0.0)
 
@@ -200,13 +188,13 @@ try:
 
     sid_1h11m = start_and_backdate(3600 + 11 * 60)
     stopped_1h11m = db.stop_session(sid_1h11m)
-    check("stop_session: 1h11m at $5/hr bills 1 + 2/6 hours = $6.67",
-          abs(stopped_1h11m["duration_cost"] - 6.67) < 0.01)
+    check("stop_session: 1h11m at $5/hr bills 1 + 1/6 hours = $5.83",
+          abs(stopped_1h11m["duration_cost"] - 5.83) < 0.01)
 
     sid_1h59m = start_and_backdate(3600 + 59 * 60)
     stopped_1h59m = db.stop_session(sid_1h59m)
-    check("stop_session: 1h59m at $5/hr bills a full 2 hours = $10.00",
-          abs(stopped_1h59m["duration_cost"] - 10.00) < 0.01)
+    check("stop_session: 1h59m at $5/hr bills 1 + 5/6 hours = $9.17",
+          abs(stopped_1h59m["duration_cost"] - 9.17) < 0.01)
 
     sid_47m = start_and_backdate(47 * 60)
     stopped_47m = db.stop_session(sid_47m)
@@ -520,14 +508,11 @@ try:
 
     # Backdate start_time so stop_session() bills a full, predictable
     # duration_cost rather than depending on real elapsed wall-clock time.
-    # Deliberately NOT exactly 2 hours: that sits precisely on a tier
-    # boundary, and the few milliseconds of real time that pass between
-    # this backdate and stop_session()'s own datetime.now() call would
-    # push it a hair past 2h00m00s into the next 10-minute block. 1h55m
-    # sits comfortably inside the "bills as a full 2 hours" window
-    # (1:50:01-2:00:00) with margin to spare.
+    # Exactly 2 hours is stable here: the small amount of real time that
+    # passes before stop_session() runs is still rounded down within the
+    # next 10-minute block.
     from datetime import datetime as _dt, timedelta as _td
-    backdated = (_dt.now() - _td(hours=1, minutes=55)).isoformat(timespec="seconds")
+    backdated = (_dt.now() - _td(hours=2)).isoformat(timespec="seconds")
     with ddb._connect() as conn:
         conn.execute("UPDATE sessions SET start_time=? WHERE id=?", (backdated, dsid))
 

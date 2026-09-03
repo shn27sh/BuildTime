@@ -99,10 +99,9 @@ def gregorian_to_shamsi(date_str):
 # Tiered stopwatch billing rule:
 #   - Any elapsed duration from 0 seconds up to and including 1 hour
 #     bills as a flat 1-hour minimum.
-#   - Once elapsed time exceeds 1 hour, every *started* 10-minute
+#   - Once elapsed time exceeds 1 hour, each *completed* 10-minute
 #     increment past that first hour adds another 1/6 of the hourly
-#     rate — i.e. metering switches from "1 flat hour" to 10-minute
-#     blocks the moment you're past the first hour.
+#     rate. Extra minutes are rounded down to the nearest 10-minute block.
 # This is a fixed formula, not a user-configurable "round up to the
 # nearest X minutes" setting — that older knob (round_billed_minutes)
 # has been removed, since it can't compose sensibly with a rule that
@@ -120,15 +119,13 @@ def compute_billable_hours(duration_seconds):
     in either binary or decimal floating point).
 
     duration_seconds can be an int or a float (a live-ticking stopwatch
-    reports fractional seconds). Any elapsed time still in progress past
-    a boundary -- even by a fraction of a second -- counts as having
-    *started* the next 10-minute block, matching an ordinary metered/taxi
-    style "started increment" billing rule.
+    reports fractional seconds). Only fully completed 10-minute blocks after
+    the first hour are billed; remaining seconds and minutes are rounded down.
     """
     if duration_seconds <= BILLING_HOUR_SECONDS:
         return Decimal(1)
     extra_seconds = duration_seconds - BILLING_HOUR_SECONDS
-    extra_blocks = math.ceil(extra_seconds / BILLING_BLOCK_SECONDS)
+    extra_blocks = math.floor(extra_seconds / BILLING_BLOCK_SECONDS)
     return Decimal(1) + Decimal(extra_blocks) / Decimal(BILLING_BLOCKS_PER_HOUR)
 
 
