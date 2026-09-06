@@ -45,13 +45,12 @@ class WalkInCard(ttk.LabelFrame):
 
         self.comment_var = tk.StringVar()
         self.compact_comment_frame = ttk.Frame(self)
-        ttk.Label(self.compact_comment_frame, text="Comment (optional):").pack(anchor="w")
-        ttk.Entry(self.compact_comment_frame, textvariable=self.comment_var).pack(fill="x")
+        ttk.Label(self.compact_comment_frame, text="Comment (optional):", width=18).pack(side="left")
+        ttk.Entry(self.compact_comment_frame, textvariable=self.comment_var).pack(side="left", fill="x", expand=True, padx=(6, 0))
         self.compact_comment_frame.pack(fill="x", pady=(8, 0))
 
         ttk.Label(
             self, text="Snacks & drinks not tied to a table", foreground=COLORS["muted"],
-            wraplength=190, justify="left",
         ).pack(anchor="w", pady=(0, 6))
 
         # Checkout panel (shown once "Complete Sale" is tapped)
@@ -68,9 +67,9 @@ class WalkInCard(ttk.LabelFrame):
 
         comment_row = ttk.Frame(self.checkout_frame)
         comment_row.pack(fill="x", pady=(0, 4))
-        ttk.Label(comment_row, text="Comment (optional):").pack(anchor="w")
+        ttk.Label(comment_row, text="Comment (optional):", width=18).pack(side="left")
         self.comment_entry = ttk.Entry(comment_row, textvariable=self.comment_var)
-        self.comment_entry.pack(fill="x")
+        self.comment_entry.pack(side="left", fill="x", expand=True, padx=(6, 0))
 
         checkout_btns = ttk.Frame(self.checkout_frame)
         checkout_btns.pack(fill="x")

@@ -13,7 +13,7 @@ from ui.settings_window import SettingsWindow
 from ui.history_window import HistoryWindow
 from sync_manager import SyncManager
 from database import WALKIN_TABLE_ID
-from ui.theme import COLORS, apply_theme, make_brick_logo
+from ui.theme import COLORS, apply_theme, make_brick_logo, set_app_icon
 
 CARDS_PER_ROW = 3
 
@@ -32,17 +32,20 @@ class MainWindow:
         self._auto_sync_job = None
         self._settings_windows = []  # open SettingsWindow instances (non-modal, can be several)
 
-        root.title("BuildTime")
+        root.title("BuildTime - LEGO Center")
         apply_theme(root)
+        set_app_icon(root)
         # Wide enough to show 3 table columns *plus* the pinned Walk-in Sale
         # column without the user needing to resize on first launch — the
         # card area only scrolls vertically, so a too-narrow window would
         # otherwise clip that column with no way to reach it.
-        root.geometry("1250x700")
-        root.minsize(700, 500)
+        root.geometry("1310x760")
+        root.minsize(900, 560)
 
         self._build_menu()
-        self._build_brand_header()
+        self.content_frame = ttk.Frame(root, style="Content.TFrame")
+        self.content_frame.pack(side="right", fill="both", expand=True)
+        self._build_summary_cards()
         self._build_status_bar()
         self._build_search_bar()
         self._build_scrollable_area()
@@ -55,38 +58,94 @@ class MainWindow:
     # ------------------------------------------------------------------
     # Menu
     # ------------------------------------------------------------------
-    def _build_brand_header(self):
-        header = tk.Frame(self.root, bg=COLORS["red"], height=74)
-        header.pack(side="top", fill="x")
-        header.pack_propagate(False)
-        logo = make_brick_logo(header, 46)
-        logo.pack(side="left", padx=(18, 8), pady=12)
-        brand = tk.Frame(header, bg=COLORS["red"])
-        brand.pack(side="left", pady=10)
-        tk.Label(brand, text="BuildTime", bg=COLORS["red"], fg="white", font=("Segoe UI", 18, "bold")).pack(anchor="w")
-        tk.Label(brand, text="LEGO CENTER OPERATIONS", bg=COLORS["red"], fg="#ffd92f", font=("Segoe UI", 8, "bold")).pack(anchor="w")
-        tk.Label(header, text="TABLES  /  SALES  /  CONTROL", bg=COLORS["red"], fg="#ffd9dc", font=("Segoe UI", 9, "bold")).pack(side="right", padx=20)
-
     def _build_menu(self):
-        menubar = tk.Menu(self.root)
+        sidebar = tk.Frame(self.root, bg="#7f0b12", width=201)
+        sidebar.pack(side="left", fill="y")
+        sidebar.pack_propagate(False)
 
-        settings_menu = tk.Menu(menubar, tearoff=0)
-        settings_menu.add_command(label="Manage Tables...", command=lambda: self.open_settings(0))
-        settings_menu.add_command(label="Manage Items (Snacks/Drinks)...", command=lambda: self.open_settings(1))
-        settings_menu.add_command(label="Hourly Rate & Billing...", command=lambda: self.open_settings(2))
-        settings_menu.add_command(label="Cloud Sync (Supabase)...", command=lambda: self.open_settings(3))
-        menubar.add_cascade(label="Settings", menu=settings_menu)
+        brand = tk.Frame(sidebar, bg="#7f0b12")
+        brand.pack(fill="x", padx=14, pady=(28, 24))
+        make_brick_logo(brand, 42).pack(anchor="w", padx=8, pady=(0, 15))
+        tk.Label(brand, text="BUILDTIME", bg="#7f0b12", fg="white", font=("Segoe UI", 16, "bold"), anchor="w").pack(fill="x")
+        tk.Label(brand, text="LEGO CENTER", bg="#7f0b12", fg="#ffd9dc", font=("Segoe UI", 8, "bold"), anchor="w").pack(fill="x", pady=(5, 0))
 
-        data_menu = tk.Menu(menubar, tearoff=0)
-        data_menu.add_command(label="History / Records...", command=self.open_history)
-        data_menu.add_command(label="Sync Now", command=self.sync_now)
-        menubar.add_cascade(label="Data", menu=data_menu)
+        navigation = tk.Frame(sidebar, bg="#7f0b12")
+        navigation.pack(fill="x", padx=14)
+        self._sidebar_buttons = {}
+        self._add_sidebar_button(navigation, "⌂  Floor", self._focus_floor, active=True)
+        self._add_sidebar_button(navigation, "◷  History", self.open_history)
+        self._add_sidebar_button(navigation, "▤  Tables", lambda: self.open_settings(0))
+        self._add_sidebar_button(navigation, "▣  Snacks & Drinks", lambda: self.open_settings(1))
+        self._add_sidebar_button(navigation, "$  Pricing", lambda: self.open_settings(2))
+        self._add_sidebar_button(navigation, "↥  Cloud Sync", lambda: self.open_settings(3))
 
-        help_menu = tk.Menu(menubar, tearoff=0)
-        help_menu.add_command(label="About", command=self._show_about)
-        menubar.add_cascade(label="Help", menu=help_menu)
+        footer = tk.Frame(sidebar, bg="#7f0b12")
+        footer.pack(side="bottom", fill="x", padx=14, pady=22)
+        tk.Button(footer, text="ⓘ  About", command=self._show_about, anchor="w", bg="#7f0b12", fg="white", activebackground="#d71920", activeforeground="white", relief="flat", bd=0, font=("Segoe UI", 10, "bold"), padx=12, pady=10).pack(fill="x")
+        tk.Label(footer, text="PLAY  .  BUILD  .  CREATE.", bg="#7f0b12", fg="#ffd9dc", font=("Segoe UI", 7, "bold"), anchor="w").pack(fill="x", padx=12, pady=(16, 0))
 
-        self.root.config(menu=menubar)
+    def _build_summary_cards(self):
+        """Build the compact operational summary from the reference layout."""
+        summary = ttk.Frame(self.content_frame, padding=(28, 0, 22, 18), style="Surface.TFrame")
+        summary.pack(side="top", fill="x")
+        summary_inner = ttk.Frame(summary, height=60, style="Surface.TFrame")
+        summary_inner.pack(side="left", fill="x", expand=True)
+        summary_inner.pack_propagate(False)
+        summary_inner.rowconfigure(0, minsize=60, weight=1)
+        self.summary_inner = summary_inner
+        for column in range(4):
+            summary_inner.columnconfigure(column, weight=1, uniform="summary")
+
+        self.summary_values = {}
+        cards = (
+            ("tables", "TABLES", COLORS["red"]),
+            ("running", "RUNNING", COLORS["green"]),
+            ("checkout", "CHECKOUT", "#d97706"),
+            ("pending", "PENDING SYNC", COLORS["blue"]),
+        )
+        for column, (key, title, accent) in enumerate(cards):
+            card = tk.Frame(
+                summary_inner, bg=COLORS["surface"],
+                highlightbackground=COLORS["line"], highlightthickness=1, bd=0,
+            )
+            card.grid(row=0, column=column, sticky="nsew", padx=(0 if column == 0 else 8, 0))
+            tk.Frame(card, bg=accent, width=6).pack(side="left", fill="y")
+            body = tk.Frame(card, bg=COLORS["surface"])
+            body.pack(fill="both", expand=True, padx=12, pady=4)
+            tk.Label(
+                body, text=title, bg=COLORS["surface"], fg=COLORS["muted"],
+                font=("Segoe UI", 8, "bold"), anchor="w",
+            ).pack(anchor="w")
+            value = tk.Label(
+                body, text="0", bg=COLORS["surface"], fg=COLORS["ink"],
+                font=("Segoe UI", 17, "bold"), anchor="w",
+            )
+            value.pack(anchor="w", pady=(0, 0))
+            self.summary_values[key] = value
+        self._refresh_summary_cards()
+
+    def _refresh_summary_cards(self):
+        if not hasattr(self, "summary_values"):
+            return
+        active = self.db.get_active_sessions()
+        stats = self.db.sync_stats()
+        self.summary_values["tables"].config(text=str(len(self.db.list_tables(active_only=True))))
+        self.summary_values["running"].config(
+            text=str(sum(session["status"] == "running" for session in active))
+        )
+        self.summary_values["checkout"].config(
+            text=str(sum(session["status"] in ("awaiting_checkout", "walkin_checkout") for session in active))
+        )
+        self.summary_values["pending"].config(text=str(stats["pending"]))
+
+    def _add_sidebar_button(self, parent, label, command, active=False):
+        button = tk.Button(parent, text=label, command=command, anchor="w", bg="#d71920" if active else "#7f0b12", fg="white", activebackground="#d71920", activeforeground="white", relief="flat", bd=0, font=("Segoe UI", 10, "bold"), padx=12, pady=10)
+        button.pack(fill="x", pady=(0, 3))
+        self._sidebar_buttons[label] = button
+
+    def _focus_floor(self):
+        self._sidebar_buttons["⌂  Floor"].focus_set()
+        self.search_var.focus_set()
 
     def _show_about(self):
         messagebox.showinfo(
@@ -100,7 +159,7 @@ class MainWindow:
     # Status bar
     # ------------------------------------------------------------------
     def _build_status_bar(self):
-        bar = ttk.Frame(self.root, padding=(12, 5), style="Surface.TFrame")
+        bar = ttk.Frame(self.content_frame, padding=(12, 5), style="Surface.TFrame")
         bar.pack(side="bottom", fill="x")
         self.status_label = ttk.Label(bar, text="", anchor="w", style="Muted.TLabel")
         self.status_label.pack(side="left", fill="x", expand=True)
@@ -113,15 +172,16 @@ class MainWindow:
             text=f"Local DB: {self.db.db_path}   |   "
                  f"{stats['total']} record(s), {stats['pending']} pending sync   |   Cloud sync: {cloud}"
         )
+        self._refresh_summary_cards()
 
     # ------------------------------------------------------------------
     # Search bar (filter the table grid by name/number as you type)
     # ------------------------------------------------------------------
     def _build_search_bar(self):
-        bar = ttk.Frame(self.root, padding=(18, 14, 18, 10), style="Surface.TFrame")
+        bar = ttk.Frame(self.content_frame, padding=(28, 10, 22, 14), style="Surface.TFrame")
         bar.pack(side="top", fill="x")
-        ttk.Label(bar, text="TABLES", style="Title.TLabel").pack(side="left", padx=(0, 22))
-        ttk.Label(bar, text="Search table:", style="Muted.TLabel").pack(side="left", padx=(0, 6))
+        ttk.Label(bar, text="Tables & Walk-in", style="Section.TLabel").pack(side="left", padx=(0, 22))
+        ttk.Label(bar, text="Search:", style="Muted.TLabel").pack(side="left", padx=(0, 6))
         self.search_var = tk.StringVar()
         entry = ttk.Entry(bar, textvariable=self.search_var)
         entry.pack(side="left", fill="x", expand=True)
@@ -139,12 +199,8 @@ class MainWindow:
         if not self.cards:
             return
 
-        self.walkin_card.grid(row=0, column=CARDS_PER_ROW, padx=8, pady=8, sticky="nsew")
-        self.cards_frame.columnconfigure(CARDS_PER_ROW, weight=1)
-
         for table_id, card in self.cards.items():
-            if table_id != WALKIN_TABLE_ID:
-                card.grid_forget()
+            card.grid_forget()
         if self.no_match_label:
             self.no_match_label.grid_forget()
         if self.no_tables_label:
@@ -153,8 +209,9 @@ class MainWindow:
         if not self._all_tables:
             # No configured tables at all -- the walk-in card still works
             # fine on its own, so just note there are no tables alongside it.
+            self.walkin_card.grid(row=0, column=0, padx=8, pady=8, sticky="nsew")
             if self.no_tables_label:
-                self.no_tables_label.grid(row=0, column=0, columnspan=CARDS_PER_ROW, sticky="nsew")
+                self.no_tables_label.grid(row=0, column=1, columnspan=2, sticky="nsew")
             return
 
         query = self.search_var.get().strip().lower()
@@ -164,21 +221,24 @@ class MainWindow:
         )
 
         if not matches:
+            self.walkin_card.grid(row=0, column=0, padx=8, pady=8, sticky="nsew")
             if self.no_match_label:
-                self.no_match_label.grid(row=0, column=0, columnspan=CARDS_PER_ROW, sticky="nsew")
+                self.no_match_label.grid(row=0, column=1, columnspan=2, sticky="nsew")
             return
 
-        for idx, table in enumerate(matches):
+        visible_cards = [(None, self.walkin_card)] + [
+            (table["id"], self.cards[table["id"]]) for table in matches
+        ]
+        for idx, (_card_id, card) in enumerate(visible_cards):
             r, c = divmod(idx, CARDS_PER_ROW)
-            card = self.cards[table["id"]]
             card.grid(row=r, column=c, padx=8, pady=8, sticky="nsew")
-            self.cards_frame.columnconfigure(c, weight=1)
+            self.cards_frame.columnconfigure(c, weight=1, uniform="cards")
 
     # ------------------------------------------------------------------
     # Scrollable card area
     # ------------------------------------------------------------------
     def _build_scrollable_area(self):
-        outer = ttk.Frame(self.root, padding=(12, 0, 12, 12), style="Surface.TFrame")
+        outer = ttk.Frame(self.content_frame, padding=(22, 0, 22, 18), style="Surface.TFrame")
         outer.pack(fill="both", expand=True)
 
         canvas = tk.Canvas(outer, highlightthickness=0, bg=COLORS["canvas"])
@@ -186,11 +246,17 @@ class MainWindow:
         self.cards_frame = ttk.Frame(canvas)
 
         self.cards_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=self.cards_frame, anchor="nw")
+        cards_window = canvas.create_window((0, 0), window=self.cards_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.bind(
+            "<Configure>",
+            lambda event: canvas.itemconfigure(cards_window, width=event.width),
+        )
 
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        outer.rowconfigure(0, weight=1)
+        outer.columnconfigure(0, weight=1)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
 
         def _on_mousewheel(event):
             if event.num == 4:
@@ -256,6 +322,7 @@ class MainWindow:
 
     def on_session_completed(self):
         self.refresh_status_bar()
+        self._refresh_summary_cards()
         self.history_window_refresh()
 
     # ------------------------------------------------------------------
@@ -296,6 +363,7 @@ class MainWindow:
         Settings can be opened before any table is started, so any Settings
         window(s) already open need to lock/unlock themselves live rather
         than only checking once when they were first opened."""
+        self._refresh_summary_cards()
         for window in list(self._settings_windows):
             if window.winfo_exists():
                 window.refresh_lock_state(show_popup_if_locked=True)
@@ -351,6 +419,7 @@ class MainWindow:
 
     def _on_sync_done(self, result):
         self.refresh_status_bar()
+        self._refresh_summary_cards()
         self.history_window_refresh()
         messagebox.showinfo("Sync Result", result["message"])
 

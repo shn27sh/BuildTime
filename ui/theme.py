@@ -1,11 +1,14 @@
 """Shared visual language for the BuildTime LEGO center interface."""
 import tkinter as tk
 from tkinter import ttk
+from pathlib import Path
+import sys
 
 
 COLORS = {
     "red": "#d71920",
     "red_dark": "#a80f16",
+    "red_deep": "#7f0b12",
     "red_soft": "#fce8e8",
     "yellow": "#f7c600",
     "yellow_soft": "#fff5cc",
@@ -25,6 +28,11 @@ FONT = "Segoe UI"
 MONO_FONT = "Consolas"
 
 
+def _asset_dir():
+    root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    return root / "assets"
+
+
 def apply_theme(root):
     """Configure the app-wide ttk styles once, before child widgets exist."""
     root.configure(background=COLORS["canvas"])
@@ -36,14 +44,20 @@ def apply_theme(root):
 
     style.configure("TFrame", background=COLORS["canvas"])
     style.configure("Surface.TFrame", background=COLORS["surface"])
+    style.configure("Content.TFrame", background=COLORS["surface"])
     style.configure("TLabel", background=COLORS["canvas"], foreground=COLORS["ink"], font=(FONT, 10))
     style.configure("Muted.TLabel", background=COLORS["canvas"], foreground=COLORS["muted"], font=(FONT, 9))
-    style.configure("Title.TLabel", background=COLORS["canvas"], foreground=COLORS["ink"], font=(FONT, 18, "bold"))
+    style.configure("Status.TLabel", background=COLORS["surface"], foreground=COLORS["muted"], font=(FONT, 9))
+    style.configure("Eyebrow.TLabel", background=COLORS["surface"], foreground=COLORS["red"], font=(FONT, 8, "bold"))
+    style.configure("Title.TLabel", background=COLORS["surface"], foreground=COLORS["ink"], font=(FONT, 22, "bold"))
+    style.configure("Section.TLabel", background=COLORS["surface"], foreground=COLORS["ink"], font=(FONT, 12, "bold"))
     style.configure("Header.TLabel", background=COLORS["red"], foreground="white", font=(FONT, 10, "bold"))
     style.configure("TButton", padding=(12, 7), font=(FONT, 9, "bold"), borderwidth=0)
     style.map("TButton", background=[("active", COLORS["blue"]), ("disabled", COLORS["line"])], foreground=[("disabled", COLORS["disabled"])])
     style.configure("Accent.TButton", background=COLORS["red"], foreground="white")
     style.map("Accent.TButton", background=[("active", COLORS["red_dark"]), ("pressed", COLORS["red_dark"])])
+    style.configure("Secondary.TButton", background=COLORS["surface"], foreground=COLORS["red"], padding=(12, 8), font=(FONT, 9, "bold"))
+    style.map("Secondary.TButton", background=[("active", COLORS["red_soft"]), ("pressed", COLORS["red_soft"])])
     style.configure("Start.TButton", background=COLORS["green"], foreground="white")
     style.map("Start.TButton", background=[("active", "#07853a"), ("pressed", "#066c30")])
     style.configure("Stop.TButton", background=COLORS["red"], foreground="white")
@@ -63,12 +77,38 @@ def apply_theme(root):
 
 
 def make_brick_logo(parent, size=42):
-    """Return a small Canvas LEGO brick mark for the app header."""
-    canvas = tk.Canvas(parent, width=size, height=size, bg=COLORS["red"], highlightthickness=0)
-    left, top = 5, 14
-    right, bottom = size - 5, size - 7
-    canvas.create_rectangle(left, top, right, bottom, fill=COLORS["yellow"], outline="#c49d00", width=1)
-    canvas.create_polygon(left, top, left + 7, top - 6, right + 1, top - 6, right, top, fill="#ffd92f", outline="#c49d00")
-    for x in (left + 10, left + 24):
-        canvas.create_oval(x, top - 4, x + 7, top + 3, fill="#ffe66b", outline="#c49d00")
+    """Return a self-contained toolbox mark for the BuildTime branding."""
+    canvas = tk.Canvas(parent, width=size, height=size, bg=COLORS["red_deep"], highlightthickness=0)
+    image = _make_toolbox_image(canvas).zoom(3, 3)
+    canvas.create_image(size // 2, size // 2, image=image)
+    canvas._toolbox_image = image
     return canvas
+
+
+def _make_toolbox_image(root, size=16):
+    """Create the toolbox directly in Tk without parsing an image file."""
+    image = tk.PhotoImage(master=root, width=size, height=size)
+    rows = []
+    for y in range(size):
+        row = []
+        for x in range(size):
+            in_body = 3 <= x <= 12 and 6 <= y <= 14
+            in_handle = ((x - 5) ** 2 + (y - 5) ** 2 <= 16) or ((x - 10) ** 2 + (y - 5) ** 2 <= 16)
+            if in_body or in_handle:
+                row.append("#a80f16" if y == 14 else ("#eb4c54" if 5 <= y <= 6 else "#d71920"))
+            else:
+                row.append("#7f0b12")
+        rows.append(row)
+    image.put(rows)
+    return image
+
+
+def set_app_icon(root):
+    """Use the shared ICO for the title bar."""
+    icon_path = _asset_dir() / "icon.ico"
+    try:
+        root.iconbitmap(default=str(icon_path))
+    except tk.TclError:
+        image = _make_toolbox_image(root)
+        root._buildtime_icon = image
+        root.iconphoto(True, image)

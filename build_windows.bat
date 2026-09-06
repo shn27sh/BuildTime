@@ -37,7 +37,7 @@ REM --onefile  : ship ONE file, nothing to unzip or install
 REM --windowed : no black console window behind the app
 REM --name     : controls the .exe's name
 REM Want a custom icon later? Add:  --icon=path\to\icon.ico
-pyinstaller --noconfirm --onefile --windowed --name BuildTime main.py
+pyinstaller --noconfirm --onefile --windowed --name BuildTime --icon=assets\icon.ico main.py
 if errorlevel 1 goto :error
 
 echo [4/4] Cleaning up build leftovers ...

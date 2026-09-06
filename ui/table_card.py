@@ -64,7 +64,7 @@ class TableCard(ttk.LabelFrame):
         self.comment_var = tk.StringVar()
         self.comment_var.trace_add("write", lambda *a: self._on_comment_changed())
         self.compact_comment_frame = ttk.Frame(self)
-        ttk.Label(self.compact_comment_frame, text="Comment (optional):").pack(anchor="w")
+        ttk.Label(self.compact_comment_frame, text="Comment (optional):", width=18).pack(side="left")
         self.compact_comment_entry = ttk.Entry(self.compact_comment_frame, textvariable=self.comment_var)
 
         # Manually adjust stopwatch time (e.g. if user forgot to press Start)
@@ -91,7 +91,7 @@ class TableCard(ttk.LabelFrame):
         # instant it happens), rather than only being captured at Finish --
         # a note jotted down early in a long session shouldn't be at risk
         # if the app closes before that table is ever stopped.
-        self.compact_comment_entry.pack(fill="x")
+        self.compact_comment_entry.pack(side="left", fill="x", expand=True, padx=(6, 0))
         self.compact_comment_frame.pack(fill="x", pady=(8, 0))
 
         # Checkout panel (shown once a table is stopped, before the next customer)
@@ -111,9 +111,9 @@ class TableCard(ttk.LabelFrame):
         self.discount_entry.pack(side="left", padx=4)
         self.discount_entry.bind("<Return>", lambda e: self._apply_discount())
         ttk.Button(discount_row, text="Apply", command=self._apply_discount).pack(side="left")
-        ttk.Label(discount_row, text="(duration only, never items)", foreground="gray").pack(
-            side="left", padx=(6, 0)
-        )
+        ttk.Label(
+            self.checkout_frame, text="(duration only, never items)", foreground="gray"
+        ).pack(anchor="w", pady=(0, 4))
 
         self.cost_label = ttk.Label(self.checkout_frame, text="", justify="left", font=("Consolas", 9))
         self.cost_label.pack(anchor="w")
@@ -127,9 +127,9 @@ class TableCard(ttk.LabelFrame):
 
         comment_row = ttk.Frame(self.checkout_frame)
         comment_row.pack(fill="x", pady=(0, 4))
-        ttk.Label(comment_row, text="Comment (optional):").pack(anchor="w")
+        ttk.Label(comment_row, text="Comment (optional):", width=18).pack(side="left")
         self.comment_entry = ttk.Entry(comment_row, textvariable=self.comment_var)
-        self.comment_entry.pack(fill="x")
+        self.comment_entry.pack(side="left", fill="x", expand=True, padx=(6, 0))
 
         checkout_btns = ttk.Frame(self.checkout_frame)
         checkout_btns.pack(fill="x")
