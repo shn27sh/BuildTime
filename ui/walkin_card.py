@@ -44,6 +44,7 @@ class WalkInCard(ttk.LabelFrame):
         self.status_label.pack()
 
         self.comment_var = tk.StringVar()
+        self.comment_var.trace_add("write", lambda *a: self._on_comment_changed())
         self.compact_comment_frame = ttk.Frame(self)
         ttk.Label(self.compact_comment_frame, text="Comment (optional):", width=18).pack(side="left")
         ttk.Entry(self.compact_comment_frame, textvariable=self.comment_var).pack(side="left", fill="x", expand=True, padx=(6, 0))
@@ -115,6 +116,13 @@ class WalkInCard(ttk.LabelFrame):
         self._build_items_section()
         if not self._folded:
             self.items_section.pack(fill="x")
+
+    def _on_comment_changed(self):
+        """Save walk-in comments immediately, the same as a table session.
+        This keeps the checkout view and the finished record in sync without
+        waiting until the sale is completed."""
+        if self.session_id:
+            self.db.update_comment(self.session_id, self.comment_var.get())
 
     def _render_checkout(self, session):
         self.status = "checkout"
@@ -220,6 +228,7 @@ class WalkInCard(ttk.LabelFrame):
     def on_complete_sale(self):
         if self.session_id is None:
             return
+        self.db.update_comment(self.session_id, self.comment_var.get())
         session = self.db.stop_walkin_sale(self.session_id)
         self._render_checkout(session)
 
