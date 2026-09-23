@@ -245,6 +245,7 @@ class WalkInCard(ttk.LabelFrame):
         comment = self.comment_var.get().strip()
         self.db.finish_session(self.session_id, amount, comment)
         self.session_id = None
+        self.comment_var.set("")
         self.app.on_session_completed()
         self._render_open()
 

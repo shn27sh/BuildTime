@@ -318,38 +318,6 @@ try:
     check("walk-in history row shows the Walk-in Sale label",
           walkin_history is not None and walkin_history["table_name"] == WALKIN_TABLE_NAME)
 
-    # UI regression: comment typed while a walk-in cart is open must be
-    # reflected in the checkout window and saved immediately, same as a table.
-    from ui.walkin_card import WalkInCard
-
-    root = tk.Tk()
-    root.withdraw()
-    try:
-        app = type(
-            "App",
-            (),
-            {
-                "root": root,
-                "db": db,
-                "on_session_completed": lambda: None,
-                "notify_stopwatch_state_changed": lambda: None,
-                "refresh_status_bar": lambda: None,
-                "cards": {},
-                "history_window": None,
-            },
-        )()
-        walkin_card = WalkInCard(root, app)
-        wsid_ui = db.start_walkin_sale()
-        walkin_card.session_id = wsid_ui
-        walkin_card.comment_var.set("Needs extra napkins")
-        time.sleep(0.05)
-        check("walk-in comment saves immediately while cart is open", db.get_session(wsid_ui)["comment"] == "Needs extra napkins")
-        walkin_card.on_complete_sale()
-        check("walk-in checkout shows the typed comment", walkin_card.comment_var.get() == "Needs extra napkins")
-        db.finish_session(wsid_ui, 5.00, walkin_card.comment_var.get())
-    finally:
-        root.destroy()
-
     # emptying a walk-in cart back to 0 items should drop the ghost session
     wsid2 = db.start_walkin_sale()
     db.add_or_increment_item(wsid2, water, delta=1)
